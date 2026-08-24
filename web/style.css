@@ -334,9 +334,17 @@ main.main-wide { max-width: 960px; }
   resize: vertical;
 }
 .translate-input:focus { outline: none; border-color: var(--blue); }
-.translate-result { width: 100%; }
-.translate-result.business { border-color: var(--gold); background: #fffdf5; }
-.translate-text { font-size: 16px; font-weight: 700; line-height: 1.5; }
+.translate-input.tall { min-height: 260px; flex: 1; }
+
+.translate-grid { display: grid; grid-template-columns: 1fr; gap: 16px; width: 100%; align-items: stretch; }
+@media (min-width: 780px) { .translate-grid { grid-template-columns: 1fr 1fr; } }
+.translate-pane { display: flex; flex-direction: column; gap: 8px; }
+.translate-pane-col { display: flex; flex-direction: column; gap: 16px; }
+.translate-pane-col .translate-pane { flex: 1; }
+.translate-pane.business { border-color: var(--gold); background: #fffdf5; }
+.translate-pane.loading { opacity: 0.6; }
+.translate-text { font-size: 16px; font-weight: 700; line-height: 1.5; white-space: pre-wrap; }
+.translate-placeholder { color: var(--text-muted); font-weight: 600; font-size: 14px; }
 
 /* -- streak hero -- */
 .streak-hero { display: flex; flex-direction: column; align-items: center; gap: 4px; padding-bottom: 18px; margin-bottom: 18px; border-bottom: 2px solid var(--border); }

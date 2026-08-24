@@ -48,7 +48,7 @@ function App() {
   else if (activeRoute === 'profile') view = <ProfileView me={me} showToast={showToast} />;
   else view = <MainView me={me} />;
 
-  const isWide = activeRoute === 'main' || activeRoute === 'quiz';
+  const isWide = activeRoute === 'main' || activeRoute === 'quiz' || activeRoute === 'translate';
 
   return (
     <>
