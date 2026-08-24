@@ -94,6 +94,7 @@ func initSchema(ctx context.Context) error {
 	stmts = append(stmts, scoreSchemaStmts...)
 	stmts = append(stmts, quizSchemaStmts...)
 	stmts = append(stmts, tedtalkSchemaStmts...)
+	stmts = append(stmts, translateSchemaStmts...)
 
 	for _, s := range stmts {
 		if _, err := db.Exec(ctx, s); err != nil {
