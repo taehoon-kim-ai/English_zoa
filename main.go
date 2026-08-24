@@ -14,6 +14,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Bootstrap only. Each feature lives in its own file — profile.go, phrase.go,
+// quiz.go, score.go — so two people can work on separate sections without
+// touching this one: main() just wires DB init + each section's
+// register*Routes(r) + static file serving.
+
 //go:embed all:web
 var webFS embed.FS
 
@@ -67,147 +72,12 @@ func main() {
 	}
 
 	r := gin.Default()
-
 	r.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 
-	r.GET("/api/me", func(c *gin.Context) {
-		email, ok := requireEmail(c)
-		if !ok {
-			return
-		}
-		ctx := c.Request.Context()
-		if err := ensureUser(ctx, email); err != nil {
-			log.Printf("ensureUser: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "profile unavailable"})
-			return
-		}
-		streak, err := recordLogin(ctx, email, time.Now())
-		if err != nil {
-			log.Printf("recordLogin: %v", err)
-		}
-		profile, err := getUser(ctx, email)
-		if err != nil {
-			log.Printf("getUser: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "profile unavailable"})
-			return
-		}
-		score, err := getScore(ctx, email)
-		if err != nil {
-			log.Printf("getScore: %v", err)
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"email":          email,
-			"nickname":       profile.Nickname,
-			"status_message": profile.StatusMessage,
-			"streak":         streak,
-			"score":          score,
-		})
-	})
-
-	r.POST("/api/profile", func(c *gin.Context) {
-		email, ok := requireEmail(c)
-		if !ok {
-			return
-		}
-		var body struct {
-			Nickname      string `json:"nickname"`
-			StatusMessage string `json:"status_message"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-			return
-		}
-		ctx := c.Request.Context()
-		if err := ensureUser(ctx, email); err != nil {
-			log.Printf("ensureUser: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
-			return
-		}
-		if err := updateProfile(ctx, email, body.Nickname, body.StatusMessage); err != nil {
-			log.Printf("updateProfile: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-
-	r.GET("/api/calendar", func(c *gin.Context) {
-		email, ok := requireEmail(c)
-		if !ok {
-			return
-		}
-		events, err := getLoginHistory(c.Request.Context(), email, 90)
-		if err != nil {
-			log.Printf("getLoginHistory: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "calendar unavailable"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"events": events})
-	})
-
-	r.GET("/api/phrase/today", func(c *gin.Context) {
-		email, ok := requireEmail(c)
-		if !ok {
-			return
-		}
-		ctx := c.Request.Context()
-		phrase, err := ensureTodayPhrase(ctx)
-		if err != nil {
-			log.Printf("ensureTodayPhrase: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "phrase unavailable"})
-			return
-		}
-		attempt, err := getAttempt(ctx, email, phrase.ID)
-		if err != nil {
-			log.Printf("getAttempt: %v", err)
-		}
-		c.JSON(http.StatusOK, gin.H{"phrase": phrase, "attempt": attempt})
-	})
-
-	r.POST("/api/phrase/attempt", func(c *gin.Context) {
-		email, ok := requireEmail(c)
-		if !ok {
-			return
-		}
-		var body struct {
-			PhraseID int    `json:"phrase_id"`
-			Result   string `json:"result"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil || (body.Result != "known" && body.Result != "unknown") {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-			return
-		}
-		ctx := c.Request.Context()
-		if err := ensureUser(ctx, email); err != nil {
-			log.Printf("ensureUser: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "attempt failed"})
-			return
-		}
-		scoreDelta, err := recordAttempt(ctx, email, body.PhraseID, body.Result)
-		if err != nil {
-			log.Printf("recordAttempt: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "attempt failed"})
-			return
-		}
-		score, err := getScore(ctx, email)
-		if err != nil {
-			log.Printf("getScore: %v", err)
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "score_delta": scoreDelta, "score": score})
-	})
-
-	r.GET("/api/leaderboard", func(c *gin.Context) {
-		if _, ok := requireEmail(c); !ok {
-			return
-		}
-		rows, err := getLeaderboard(c.Request.Context(), 50)
-		if err != nil {
-			log.Printf("getLeaderboard: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "leaderboard unavailable"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"leaderboard": rows})
-	})
+	registerProfileRoutes(r)
+	registerPhraseRoutes(r)
+	registerQuizRoutes(r)
+	registerLeaderboardRoutes(r)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {

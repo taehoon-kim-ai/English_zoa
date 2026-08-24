@@ -1,16 +1,39 @@
 # English_zoa
 
-매일 영어 문구를 플래시카드로 풀고 점수로 경쟁하는 팀 학습 앱. Applied 내부
+매일 **비즈니스 영어** 문구를 풀고 점수로 경쟁하는 팀 학습 앱. Applied 내부
 **Apps Platform v2**(Cloud Run · IAP/Okta) 위에서 동작하며, 배포 패턴은
 [MADANG](https://github.com/seungheon-lee-ai/madang) 대시보드와 동일하다
-(Go 단일 서비스가 `web/`를 `//go:embed`로 서빙 + `/api/*`).
+(Go 단일 서비스가 `web/`를 `//go:embed`로 서빙 + `/api/*`). UI는 듀오링고 스타일
+(두꺼운 버튼, 스트릭 불꽃, 진한 그린/블루 컬러).
+
+라이브: https://english-zoa.experimental.apps.applied.dev
 
 ## 기능
 
-- **오늘의 문구** — `#learning-english-with-ai` 슬랙 채널에서 자동으로 가져온 문구를
-  플래시카드로 (영어 앞면 → 클릭하면 한국어 뒷면). "알아요"/"몰라요"로 응답.
+- **오늘의 문구** — `#learning-english-with-ai` 슬랙 채널에서 자동으로 가져온 비즈니스
+  영어 문구를 플래시카드로 (영어 앞면 → 클릭하면 한국어 뒷면). "알아요"/"몰라요"로 응답.
+- **퀴즈** — 지난 문구들로 만든 4지선다. 아직 안 풀어본 문구가 우선 출제되고, 다
+  풀면 연습 모드(점수 없음)로 계속 풀 수 있음.
 - **개인 페이지** — 닉네임·상태 메시지 편집, 최근 접속 기록(날짜별 첫 접속 시각) 캘린더.
-- **리더보드** — 정답 시 +1점, 7일 연속 로그인마다 +10점 보너스로 팀원끼리 경쟁.
+- **리더보드** — 플래시카드 정답 +1점, 퀴즈 정답 +2점, 7일 연속 로그인마다 +10점
+  보너스로 팀원끼리 경쟁.
+
+## 섹션별 파일 구조 — 승헌/태훈 병렬 작업용
+
+각 기능이 백엔드 1개 파일 + 프론트 1개 파일로 묶여 있어서, 서로 다른 섹션이면
+겹치는 파일 없이 동시에 작업할 수 있다.
+
+| 섹션 | 백엔드 | 프론트 | DB 테이블 |
+|---|---|---|---|
+| 오늘의 문구 | `phrase.go` (+ `slack.go`) | `web/home.jsx` | `phrases`, `card_attempts` |
+| 퀴즈 | `quiz.go` | `web/quiz.jsx` | `quiz_attempts` (읽기: `phrases`) |
+| 개인 페이지 | `profile.go` | `web/profile.jsx` | `users`, `login_events` |
+| 리더보드/점수 | `score.go` | `web/leaderboard.jsx` | `user_scores` |
+| 공통 | `main.go`(부트스트랩), `db.go`(연결) | `web/app.jsx`(셸/라우팅), `web/topbar.jsx`, `web/api.js` | — |
+
+각 섹션 파일이 자기 테이블의 `CREATE TABLE` 문(`*SchemaStmts`)과 `register*Routes(r)`를
+갖고 있다 — `db.go`의 `initSchema`와 `main.go`의 `main()`이 그것들을 그냥 호출만 한다.
+새 섹션을 추가할 땐 이 패턴을 따라 새 `.go`/`.jsx` 파일 하나씩 추가하면 된다.
 
 ## 로컬 실행
 
@@ -25,17 +48,9 @@ export DEV_USER_EMAIL=you@applied.co
 go run .   # http://localhost:8080
 ```
 
-Slack 연동 없이도 동작한다 — `SLACK_CHANNEL_ID`가 비어 있으면 내장 fallback 문구
-목록(`db.go` `fallbackPhrases`)에서 날짜별로 하나씩 보여준다.
-
-## 구성
-
-| 파일 | 역할 |
-|---|---|
-| `main.go` | Go 서버 — `web/` 임베드 서빙 + `/api/*`, IAP 헤더/`DEV_USER_EMAIL` identity |
-| `db.go` | Postgres 스키마(`english_zoa`) + 프로필·로그인·점수·문구 쿼리 |
-| `slack.go` | Data API로 `#learning-english-with-ai` 조회 + 문구 파싱 |
-| `web/index.html`, `web/app.jsx`, `web/style.css` | no-build 프론트(React+Babel CDN) |
+Slack 연동 없이도 동작한다 — `SLACK_CHANNEL_ID`가 비어 있으면 내장 fallback
+비즈니스 영어 문구 목록(`phrase.go` `fallbackPhrases`)에서 날짜별로 하나씩 보여준다.
+퀴즈는 문구가 4개 이상 쌓여야 뜬다 (1개 정답 + 3개 오답 보기를 만들 수 있어야 함).
 
 ## Slack 연동 — 확인 필요
 
@@ -57,24 +72,20 @@ Slack 연동 없이도 동작한다 — `SLACK_CHANNEL_ID`가 비어 있으면 �
 
 ## 배포 (Apps Platform v2)
 
-MADANG과 동일한 절차:
-
-1. `#eng-apps-platform-v2`에 앱 이름(`english-zoa`) + 태훈/승헌 이메일을 보내
-   신규 앱 배포 권한을 "hotfix"로 열어달라고 요청
-2. `#learning-english-with-ai` 채널에 앱을 초대하고, Slack 읽기용 Data API
-   스코프(`channels:history`, `channels:read`) 승인을 플랫폼팀에 요청
-3. 배포:
+이미 배포되어 있음 (`project.toml` name = `english-zoa`, owner = 태훈,
+maintainer = 승헌). 재배포:
 
 ```bash
-docker build -t english-zoa:latest .
-apps-platform app deploy --image english-zoa:latest
+apps-platform app deploy   # go.mod 있으면 자동 --no-build 모드, Docker 불필요
 ```
 
-(`make deploy`가 동일 동작. 로컬 Data API 접근은 `apps-platform app forwarder --service english-zoa`.)
+새로 배포 권한이 필요하면 `#eng-apps-platform-v2`에 앱 이름 + 이메일을 보내면 된다.
+`#learning-english-with-ai` Slack 연동은 별도로 채널 초대 + Data API 스코프
+(`channels:history`, `channels:read`) 승인을 플랫폼팀에 요청해야 한다.
 
 ## 검증
 
 ```bash
-go test ./...   # parsePhraseText, 점수 계산 유닛 테스트
-go run .        # 로컬 실행 후 브라우저에서 플래시카드 flip → 알아요/몰라요 → 캘린더 → 리더보드 확인
+go test ./...   # parsePhraseText, 닉네임/fallback 문구 유닛 테스트
+go run .        # 로컬 실행 후 브라우저에서 플래시카드 flip → 퀴즈 → 캘린더 → 리더보드 확인
 ```

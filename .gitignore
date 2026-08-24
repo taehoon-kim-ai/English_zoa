@@ -1,5 +1,6 @@
 /english-zoa
 /English_zoa
+/app
 *.log
 .DS_Store
 node_modules/
