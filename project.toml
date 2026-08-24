@@ -1,4 +1,4 @@
-name = "english-zoa"
+name = "phraseup"
 enable_filestore = false
 enable_gcs_fuse = false
 enable_postgres = true
@@ -19,4 +19,4 @@ min_instances = 0
 [metadata]
   owner = "taehoon.kim@applied.co"
   maintainers = ["seungheon.lee@applied.co"]
-  description = "English_zoa — daily business English quiz + leaderboard"
+  description = "PhraseUp — daily business English quiz + leaderboard"

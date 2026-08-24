@@ -60,6 +60,7 @@ func requireEmail(c *gin.Context) (string, bool) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "no authenticated user — set DEV_USER_EMAIL locally"})
 		return "", false
 	}
+	go touchLastActive(email) // best-effort presence signal for the main page's team panel (profile.go)
 	return email, true
 }
 
@@ -78,6 +79,7 @@ func main() {
 	registerProfileRoutes(r)
 	registerQuizRoutes(r)
 	registerLeaderboardRoutes(r)
+	registerTedTalkRoutes(r)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
@@ -92,7 +94,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("English_zoa serving on :%s\n", port)
+	log.Printf("PhraseUp serving on :%s\n", port)
 	if err := r.Run(":" + port); err != nil {
 		log.Fatal(err)
 	}

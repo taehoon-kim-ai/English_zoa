@@ -140,7 +140,7 @@ func dataAPIGetSlack(path string) (*http.Response, error) {
 
 	base := os.Getenv("DATA_API_URL")
 	if base == "" {
-		return nil, fmt.Errorf("DATA_API_URL not set — run: apps-platform app forwarder --service english-zoa")
+		return nil, fmt.Errorf("DATA_API_URL not set — run: apps-platform app forwarder --service phraseup")
 	}
 	req, err := http.NewRequest("GET", base+"/api/data/slack"+path, nil)
 	if err != nil {

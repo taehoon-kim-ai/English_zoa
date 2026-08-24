@@ -28,7 +28,7 @@ import (
 // succeeding.
 
 const (
-	anthropicAPIKeySecretName  = "english-zoa-anthropic-api-key"
+	anthropicAPIKeySecretName  = "phraseup-anthropic-api-key"
 	anthropicAPIKeyCacheMaxAge = 10 * time.Minute
 	aiGenerationBatchSize      = 20
 	aiPoolLowWatermark         = 15 // top up whenever fewer than this many phrases exist
@@ -143,7 +143,7 @@ Respond with ONLY a JSON array, no prose, no markdown code fences, in exactly th
 // quiz build) never block on it.
 func topUpPhrasePoolIfLow(ctx context.Context) {
 	var total int
-	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM english_zoa.phrases`).Scan(&total); err != nil {
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases`).Scan(&total); err != nil {
 		log.Printf("ai: count phrases: %v", err)
 		return
 	}
@@ -172,7 +172,7 @@ func topUpPhrasePoolIfLow(ctx context.Context) {
 			category = "expression"
 		}
 		tag, err := db.Exec(ctx, `
-			INSERT INTO english_zoa.phrases (english_text, korean_text, category)
+			INSERT INTO phraseup.phrases (english_text, korean_text, category)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (english_text) DO NOTHING
 		`, english, korean, category)

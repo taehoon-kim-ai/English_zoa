@@ -1,12 +1,13 @@
-// ── app shell — routing + shared me/score state + toast. Section views
-// (QuizView, ProfileView, LeaderboardView, TopBar) live in their
-// own files and are loaded before this one (see index.html).
+// ── app shell — routing + shared me state + toast. Section views (MainView,
+// QuizView, ProfileView, TopBar) live in their own files and are loaded
+// before this one (see index.html). Profile has no nav tab — it's only
+// reached via the avatar button in TopBar (see topbar.jsx).
 const { useState: useStateApp, useEffect: useEffectApp, useCallback: useCallbackApp, useRef: useRefApp } = React;
 
 function useHashRoute() {
-  const [route, setRoute] = useStateApp(() => window.location.hash.replace('#', '') || 'quiz');
+  const [route, setRoute] = useStateApp(() => window.location.hash.replace('#', '') || 'main');
   useEffectApp(() => {
-    const onHashChange = () => setRoute(window.location.hash.replace('#', '') || 'quiz');
+    const onHashChange = () => setRoute(window.location.hash.replace('#', '') || 'main');
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
@@ -38,18 +39,18 @@ function App() {
 
   const onCorrectCountChange = (correct_count) => setMe((prev) => (prev ? { ...prev, correct_count } : prev));
 
-  const knownRoutes = ['quiz', 'profile', 'leaderboard'];
-  const activeRoute = knownRoutes.includes(route) ? route : 'quiz';
+  const knownRoutes = ['main', 'quiz', 'profile'];
+  const activeRoute = knownRoutes.includes(route) ? route : 'main';
 
   let view;
-  if (activeRoute === 'profile') view = <ProfileView me={me} showToast={showToast} />;
-  else if (activeRoute === 'leaderboard') view = <LeaderboardView me={me} />;
-  else view = <QuizView onCorrectCountChange={onCorrectCountChange} showToast={showToast} />;
+  if (activeRoute === 'quiz') view = <QuizView onCorrectCountChange={onCorrectCountChange} showToast={showToast} />;
+  else if (activeRoute === 'profile') view = <ProfileView me={me} showToast={showToast} />;
+  else view = <MainView me={me} />;
 
   return (
     <>
       <TopBar route={activeRoute} me={me} />
-      <main>{view}</main>
+      <main className={activeRoute === 'main' ? 'main-wide' : ''}>{view}</main>
       {toastNode}
     </>
   );

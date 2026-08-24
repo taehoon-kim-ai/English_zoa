@@ -23,7 +23,7 @@ var phraseSchemaStmts = []string{
 	// enforced unique among the non-null (daily-source) rows via the partial
 	// index below. english_text is unique across the whole table so bulk
 	// seeding and AI top-ups can both use ON CONFLICT DO NOTHING freely.
-	`CREATE TABLE IF NOT EXISTS english_zoa.phrases (
+	`CREATE TABLE IF NOT EXISTS phraseup.phrases (
 		id              SERIAL PRIMARY KEY,
 		english_text    TEXT NOT NULL,
 		korean_text     TEXT NOT NULL,
@@ -32,14 +32,14 @@ var phraseSchemaStmts = []string{
 		source_slack_ts TEXT UNIQUE,
 		created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
-	`ALTER TABLE english_zoa.phrases ALTER COLUMN phrase_date DROP NOT NULL`,
-	`ALTER TABLE english_zoa.phrases DROP CONSTRAINT IF EXISTS phrases_phrase_date_key`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS phrases_phrase_date_unique ON english_zoa.phrases (phrase_date) WHERE phrase_date IS NOT NULL`,
-	`ALTER TABLE english_zoa.phrases ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'expression'`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS phrases_english_text_unique ON english_zoa.phrases (english_text)`,
+	`ALTER TABLE phraseup.phrases ALTER COLUMN phrase_date DROP NOT NULL`,
+	`ALTER TABLE phraseup.phrases DROP CONSTRAINT IF EXISTS phrases_phrase_date_key`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS phrases_phrase_date_unique ON phraseup.phrases (phrase_date) WHERE phrase_date IS NOT NULL`,
+	`ALTER TABLE phraseup.phrases ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'expression'`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS phrases_english_text_unique ON phraseup.phrases (english_text)`,
 	// card_attempts belonged to the removed flashcard screen — drop it if a
 	// prior deploy created it.
-	`DROP TABLE IF EXISTS english_zoa.card_attempts`,
+	`DROP TABLE IF EXISTS phraseup.card_attempts`,
 }
 
 // seedStaticPhrasesIfMissing bulk-inserts the curated fallbackPhrases list.
@@ -47,7 +47,7 @@ var phraseSchemaStmts = []string{
 // circuits it) — see quiz.go's /api/quiz/today handler.
 func seedStaticPhrasesIfMissing(ctx context.Context) error {
 	var total int
-	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM english_zoa.phrases`).Scan(&total); err != nil {
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases`).Scan(&total); err != nil {
 		return err
 	}
 	if total >= len(fallbackPhrases) {
@@ -55,7 +55,7 @@ func seedStaticPhrasesIfMissing(ctx context.Context) error {
 	}
 	for _, p := range fallbackPhrases {
 		if _, err := db.Exec(ctx, `
-			INSERT INTO english_zoa.phrases (english_text, korean_text, category)
+			INSERT INTO phraseup.phrases (english_text, korean_text, category)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (english_text) DO NOTHING
 		`, p.En, p.Ko, p.Category); err != nil {
@@ -84,7 +84,7 @@ func ensureTodayPhrase(ctx context.Context) (Phrase, error) {
 	var p Phrase
 	var d time.Time
 	err := db.QueryRow(ctx, `
-		SELECT id, english_text, korean_text, category, phrase_date FROM english_zoa.phrases WHERE phrase_date = $1
+		SELECT id, english_text, korean_text, category, phrase_date FROM phraseup.phrases WHERE phrase_date = $1
 	`, dateStr).Scan(&p.ID, &p.EnglishText, &p.KoreanText, &p.Category, &d)
 	if err == nil {
 		p.PhraseDate = d.Format("2006-01-02")
@@ -102,7 +102,7 @@ func ensureTodayPhrase(ctx context.Context) (Phrase, error) {
 	// Upsert-select: a no-op UPDATE on conflict lets RETURNING work even when
 	// a concurrent request already inserted today's row first.
 	err = db.QueryRow(ctx, `
-		INSERT INTO english_zoa.phrases (english_text, korean_text, category, phrase_date, source_slack_ts)
+		INSERT INTO phraseup.phrases (english_text, korean_text, category, phrase_date, source_slack_ts)
 		VALUES ($1, $2, 'expression', $3, $4)
 		ON CONFLICT (phrase_date) WHERE phrase_date IS NOT NULL DO UPDATE SET phrase_date = EXCLUDED.phrase_date
 		RETURNING id, english_text, korean_text, category, phrase_date

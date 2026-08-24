@@ -17,7 +17,7 @@ import (
 )
 
 // ── section: quiz — 10 fresh questions a day, multiple-choice + word-order ──
-// Owns english_zoa.quiz_questions. Reads english_zoa.phrases (owned by
+// Owns phraseup.quiz_questions. Reads phraseup.phrases (owned by
 // phrase.go, topped up by ai.go) but never writes it. Work on this file +
 // web/quiz.jsx without touching the other sections.
 //
@@ -36,13 +36,13 @@ import (
 var quizSchemaStmts = []string{
 	// quiz_attempts belonged to the old "infinite pool, one-shot per phrase"
 	// design — replaced by the fixed daily set below.
-	`DROP TABLE IF EXISTS english_zoa.quiz_attempts`,
-	`CREATE TABLE IF NOT EXISTS english_zoa.quiz_questions (
+	`DROP TABLE IF EXISTS phraseup.quiz_attempts`,
+	`CREATE TABLE IF NOT EXISTS phraseup.quiz_questions (
 		id             SERIAL PRIMARY KEY,
-		email          TEXT NOT NULL REFERENCES english_zoa.users(email) ON DELETE CASCADE,
+		email          TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
 		quiz_date      DATE NOT NULL,
 		seq            SMALLINT NOT NULL,
-		phrase_id      INT NOT NULL REFERENCES english_zoa.phrases(id) ON DELETE CASCADE,
+		phrase_id      INT NOT NULL REFERENCES phraseup.phrases(id) ON DELETE CASCADE,
 		category       TEXT NOT NULL DEFAULT 'expression',
 		question_type  TEXT NOT NULL CHECK (question_type IN ('multiple_choice', 'word_order')),
 		prompt         TEXT NOT NULL,
@@ -52,7 +52,7 @@ var quizSchemaStmts = []string{
 		answered_at    TIMESTAMPTZ,
 		UNIQUE (email, quiz_date, seq)
 	)`,
-	`ALTER TABLE english_zoa.quiz_questions ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'expression'`,
+	`ALTER TABLE phraseup.quiz_questions ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'expression'`,
 }
 
 const (
@@ -111,7 +111,7 @@ func buildWordOrderChips(english string) ([]QuizOption, []string) {
 
 func buildMultipleChoiceQuestion(ctx context.Context, phraseID int, english, korean string) (prompt string, options []QuizOption, answer quizAnswerKey, err error) {
 	rows, err := db.Query(ctx, `
-		SELECT id, korean_text FROM english_zoa.phrases WHERE id != $1 ORDER BY random() LIMIT 3
+		SELECT id, korean_text FROM phraseup.phrases WHERE id != $1 ORDER BY random() LIMIT 3
 	`, phraseID)
 	if err != nil {
 		return "", nil, quizAnswerKey{}, err
@@ -166,9 +166,9 @@ func chooseQuestionType(category string, wordCount, totalPhrases int) string {
 // so a small team with a small phrase pool still gets a full set of 10.
 func pickDailyPhraseIDs(ctx context.Context, email string, count int) ([]int, error) {
 	rows, err := db.Query(ctx, `
-		SELECT p.id FROM english_zoa.phrases p
+		SELECT p.id FROM phraseup.phrases p
 		WHERE NOT EXISTS (
-			SELECT 1 FROM english_zoa.quiz_questions q WHERE q.email = $1 AND q.phrase_id = p.id
+			SELECT 1 FROM phraseup.quiz_questions q WHERE q.email = $1 AND q.phrase_id = p.id
 		)
 		ORDER BY random()
 		LIMIT $2
@@ -194,7 +194,7 @@ func pickDailyPhraseIDs(ctx context.Context, email string, count int) ([]int, er
 	}
 
 	need := count - len(ids)
-	padRows, err := db.Query(ctx, `SELECT id FROM english_zoa.phrases ORDER BY random() LIMIT $1`, need)
+	padRows, err := db.Query(ctx, `SELECT id FROM phraseup.phrases ORDER BY random() LIMIT $1`, need)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +212,7 @@ func pickDailyPhraseIDs(ctx context.Context, email string, count int) ([]int, er
 func loadDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQuestion, error) {
 	rows, err := db.Query(ctx, `
 		SELECT id, seq, category, question_type, prompt, options, COALESCE(result, '')
-		FROM english_zoa.quiz_questions
+		FROM phraseup.quiz_questions
 		WHERE email = $1 AND quiz_date = $2
 		ORDER BY seq
 	`, email, dateStr)
@@ -253,7 +253,7 @@ func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQue
 	}
 
 	var total int
-	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM english_zoa.phrases`).Scan(&total); err != nil {
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases`).Scan(&total); err != nil {
 		return nil, err
 	}
 	if total == 0 {
@@ -280,7 +280,7 @@ func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQue
 
 		var category, english, korean string
 		if err := db.QueryRow(ctx, `
-			SELECT category, english_text, korean_text FROM english_zoa.phrases WHERE id = $1
+			SELECT category, english_text, korean_text FROM phraseup.phrases WHERE id = $1
 		`, phraseID).Scan(&category, &english, &korean); err != nil {
 			return nil, err
 		}
@@ -310,7 +310,7 @@ func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQue
 			return nil, err
 		}
 		if _, err := db.Exec(ctx, `
-			INSERT INTO english_zoa.quiz_questions
+			INSERT INTO phraseup.quiz_questions
 				(email, quiz_date, seq, phrase_id, category, question_type, prompt, options, correct_answer)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			ON CONFLICT (email, quiz_date, seq) DO NOTHING
@@ -352,7 +352,7 @@ func recordQuizAnswer(ctx context.Context, email string, questionID int, selecte
 	var existingResult *string
 	err = tx.QueryRow(ctx, `
 		SELECT question_type, correct_answer, result
-		FROM english_zoa.quiz_questions
+		FROM phraseup.quiz_questions
 		WHERE id = $1 AND email = $2
 		FOR UPDATE
 	`, questionID, email).Scan(&qtype, &answerRaw, &existingResult)
@@ -383,7 +383,7 @@ func recordQuizAnswer(ctx context.Context, email string, questionID int, selecte
 		result = "correct"
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE english_zoa.quiz_questions SET result = $2, answered_at = NOW() WHERE id = $1
+		UPDATE phraseup.quiz_questions SET result = $2, answered_at = NOW() WHERE id = $1
 	`, questionID, result); err != nil {
 		return false, false, quizAnswerKey{}, err
 	}

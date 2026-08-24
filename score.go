@@ -21,13 +21,13 @@ import (
 // COUNT over quiz_questions and streak comes straight from login_events, so
 // this section owns no table, just a cleanup of the retired one.
 var scoreSchemaStmts = []string{
-	`DROP TABLE IF EXISTS english_zoa.user_scores`,
+	`DROP TABLE IF EXISTS phraseup.user_scores`,
 }
 
 func getQuizCorrectCount(ctx context.Context, email string) (int, error) {
 	var count int
 	err := db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM english_zoa.quiz_questions WHERE email = $1 AND result = 'correct'
+		SELECT COUNT(*) FROM phraseup.quiz_questions WHERE email = $1 AND result = 'correct'
 	`, email).Scan(&count)
 	return count, err
 }
@@ -41,8 +41,8 @@ type QuizLeaderboardEntry struct {
 func getQuizLeaderboard(ctx context.Context, limit int) ([]QuizLeaderboardEntry, error) {
 	rows, err := db.Query(ctx, `
 		SELECT u.email, u.nickname, COUNT(*) FILTER (WHERE q.result = 'correct') AS correct_count
-		FROM english_zoa.users u
-		LEFT JOIN english_zoa.quiz_questions q ON q.email = u.email
+		FROM phraseup.users u
+		LEFT JOIN phraseup.quiz_questions q ON q.email = u.email
 		GROUP BY u.email, u.nickname
 		ORDER BY correct_count DESC, u.nickname ASC
 		LIMIT $1
@@ -79,8 +79,8 @@ func getStreakLeaderboard(ctx context.Context, limit int) ([]StreakLeaderboardEn
 
 	rows, err := db.Query(ctx, `
 		SELECT u.email, u.nickname, MAX(le.streak_count) AS best_streak
-		FROM english_zoa.login_events le
-		JOIN english_zoa.users u ON u.email = le.email
+		FROM phraseup.login_events le
+		JOIN phraseup.users u ON u.email = le.email
 		WHERE le.login_date >= $1
 		GROUP BY u.email, u.nickname
 		ORDER BY best_streak DESC, u.nickname ASC

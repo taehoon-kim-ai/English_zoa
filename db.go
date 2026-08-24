@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// db is the shared Postgres pool (Apps Platform's shared exp-db, `english_zoa`
+// db is the shared Postgres pool (Apps Platform's shared exp-db, `phraseup`
 // schema). Scoring/leaderboard has no meaning without persistence, so unlike
 // a live-fetch dashboard we don't try to run without it (see main.go).
 //
@@ -78,7 +78,7 @@ func initDB(ctx context.Context) error {
 		pool.Close()
 		return err
 	}
-	log.Println("DB ready (english_zoa schema)")
+	log.Println("DB ready (phraseup schema)")
 	return nil
 }
 
@@ -88,7 +88,7 @@ func dbAvailable() bool { return db != nil }
 // own table statements in dependency order (profile's `users` table first,
 // since phrase/score/quiz tables reference it via foreign key).
 func initSchema(ctx context.Context) error {
-	stmts := []string{`CREATE SCHEMA IF NOT EXISTS english_zoa`}
+	stmts := []string{`CREATE SCHEMA IF NOT EXISTS phraseup`}
 	stmts = append(stmts, profileSchemaStmts...)
 	stmts = append(stmts, phraseSchemaStmts...)
 	stmts = append(stmts, scoreSchemaStmts...)
@@ -96,8 +96,8 @@ func initSchema(ctx context.Context) error {
 
 	for _, s := range stmts {
 		if _, err := db.Exec(ctx, s); err != nil {
-			if s == `CREATE SCHEMA IF NOT EXISTS english_zoa` && canContinueSchemaCreate(err, schemaExists(ctx, "english_zoa")) {
-				log.Println("DB schema english_zoa exists; continuing without database CREATE privilege")
+			if s == `CREATE SCHEMA IF NOT EXISTS phraseup` && canContinueSchemaCreate(err, schemaExists(ctx, "phraseup")) {
+				log.Println("DB schema phraseup exists; continuing without database CREATE privilege")
 				continue
 			}
 			return fmt.Errorf("schema init: %w", err)

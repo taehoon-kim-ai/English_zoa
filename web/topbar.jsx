@@ -1,10 +1,11 @@
-// ── section: top nav — stateless, no hook aliasing needed ────────────────
+// ── section: top nav — stateless, no hook aliasing needed. Profile has no
+// nav tab of its own — it's reached only via the avatar button on the right.
 function TopBar({ route, me }) {
   const tabs = [
+    { key: 'main', label: 'Main', icon: '🏠' },
     { key: 'quiz', label: 'Quiz', icon: '🧠' },
-    { key: 'profile', label: 'Profile', icon: '🙋' },
-    { key: 'leaderboard', label: 'Leaderboard', icon: '🏆' },
   ];
+  const initial = me && me.nickname ? me.nickname.trim().charAt(0).toUpperCase() : '?';
   return (
     <div className="topbar">
       <div className="topbar-brand">Phrase<span>Up</span></div>
@@ -22,6 +23,9 @@ function TopBar({ route, me }) {
             <span className="stat-pill score" title="Correct answers">🎯 {me.correct_count}</span>
           </>
         )}
+        <a href="#profile" className={`avatar-btn ${route === 'profile' ? 'active' : ''}`} title="Profile">
+          {initial}
+        </a>
       </div>
     </div>
   );

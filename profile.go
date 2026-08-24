@@ -13,18 +13,20 @@ import (
 )
 
 // ── section: 개인 페이지 (닉네임/상태메시지/캘린더/로그인·스트릭) ──────────────
-// Owns english_zoa.users + english_zoa.login_events. Work on this file +
+// Owns phraseup.users + phraseup.login_events. Work on this file +
 // web/profile.jsx without touching the other sections.
 
 var profileSchemaStmts = []string{
-	`CREATE TABLE IF NOT EXISTS english_zoa.users (
+	`CREATE TABLE IF NOT EXISTS phraseup.users (
 		email          TEXT PRIMARY KEY,
 		nickname       TEXT NOT NULL DEFAULT '',
 		status_message TEXT NOT NULL DEFAULT '',
+		last_active_at TIMESTAMPTZ,
 		created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
-	`CREATE TABLE IF NOT EXISTS english_zoa.login_events (
-		email        TEXT NOT NULL REFERENCES english_zoa.users(email) ON DELETE CASCADE,
+	`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ`,
+	`CREATE TABLE IF NOT EXISTS phraseup.login_events (
+		email        TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
 		login_date   DATE NOT NULL,
 		login_time   TIMESTAMPTZ NOT NULL,
 		streak_count INT NOT NULL DEFAULT 1,
@@ -50,7 +52,7 @@ func defaultNickname(email string) string {
 // top of any handler that needs the user to already exist.
 func ensureUser(ctx context.Context, email string) error {
 	_, err := db.Exec(ctx, `
-		INSERT INTO english_zoa.users (email, nickname) VALUES ($1, $2)
+		INSERT INTO phraseup.users (email, nickname) VALUES ($1, $2)
 		ON CONFLICT (email) DO NOTHING
 	`, email, defaultNickname(email))
 	return err
@@ -59,7 +61,7 @@ func ensureUser(ctx context.Context, email string) error {
 func getUser(ctx context.Context, email string) (Profile, error) {
 	p := Profile{Email: email}
 	err := db.QueryRow(ctx, `
-		SELECT nickname, status_message FROM english_zoa.users WHERE email = $1
+		SELECT nickname, status_message FROM phraseup.users WHERE email = $1
 	`, email).Scan(&p.Nickname, &p.StatusMessage)
 	return p, err
 }
@@ -76,9 +78,60 @@ func updateProfile(ctx context.Context, email, nickname, statusMessage string) e
 		statusMessage = string(r[:80])
 	}
 	_, err := db.Exec(ctx, `
-		UPDATE english_zoa.users SET nickname = $2, status_message = $3 WHERE email = $1
+		UPDATE phraseup.users SET nickname = $2, status_message = $3 WHERE email = $1
 	`, email, nickname, statusMessage)
 	return err
+}
+
+// onlineWindow is how recently a user must have hit any authenticated
+// endpoint (touchLastActive, called from requireEmail in main.go) to count
+// as "currently online" on the main page's team panel.
+const onlineWindow = 5 * time.Minute
+
+// touchLastActive is fired-and-forgotten from requireEmail on every
+// authenticated request — best effort, a missed update just means the
+// presence indicator lags by one request, not worth failing the request over.
+func touchLastActive(email string) {
+	if !dbAvailable() || email == "" {
+		return
+	}
+	if _, err := db.Exec(context.Background(), `
+		UPDATE phraseup.users SET last_active_at = NOW() WHERE email = $1
+	`, email); err != nil {
+		log.Printf("touchLastActive: %v", err)
+	}
+}
+
+type TeamMember struct {
+	Email         string `json:"email"`
+	Nickname      string `json:"nickname"`
+	StatusMessage string `json:"status_message"`
+	Online        bool   `json:"online"`
+}
+
+func getTeam(ctx context.Context) ([]TeamMember, error) {
+	// onlineWindow is baked into the literal below (Postgres interval syntax
+	// doesn't take a Go time.Duration string) — keep the two in sync if changed.
+	rows, err := db.Query(ctx, `
+		SELECT email, nickname, status_message,
+		       (last_active_at IS NOT NULL AND last_active_at > NOW() - INTERVAL '5 minutes') AS online
+		FROM phraseup.users
+		ORDER BY online DESC, nickname ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	members := []TeamMember{}
+	for rows.Next() {
+		var m TeamMember
+		if err := rows.Scan(&m.Email, &m.Nickname, &m.StatusMessage, &m.Online); err != nil {
+			continue
+		}
+		members = append(members, m)
+	}
+	return members, rows.Err()
 }
 
 type LoginEvent struct {
@@ -99,7 +152,7 @@ func recordLogin(ctx context.Context, email string, now time.Time) (int, error) 
 
 	var existingStreak int
 	err := db.QueryRow(ctx, `
-		SELECT streak_count FROM english_zoa.login_events WHERE email = $1 AND login_date = $2
+		SELECT streak_count FROM phraseup.login_events WHERE email = $1 AND login_date = $2
 	`, email, today).Scan(&existingStreak)
 	if err == nil {
 		return existingStreak, nil
@@ -111,7 +164,7 @@ func recordLogin(ctx context.Context, email string, now time.Time) (int, error) 
 	streak := 1
 	var prevStreak int
 	err = db.QueryRow(ctx, `
-		SELECT streak_count FROM english_zoa.login_events WHERE email = $1 AND login_date = $2
+		SELECT streak_count FROM phraseup.login_events WHERE email = $1 AND login_date = $2
 	`, email, yesterday).Scan(&prevStreak)
 	if err == nil {
 		streak = prevStreak + 1
@@ -120,7 +173,7 @@ func recordLogin(ctx context.Context, email string, now time.Time) (int, error) 
 	}
 
 	if _, err := db.Exec(ctx, `
-		INSERT INTO english_zoa.login_events (email, login_date, login_time, streak_count)
+		INSERT INTO phraseup.login_events (email, login_date, login_time, streak_count)
 		VALUES ($1, $2, $3, $4)
 	`, email, today, seoulNow, streak); err != nil {
 		return 0, err
@@ -131,7 +184,7 @@ func recordLogin(ctx context.Context, email string, now time.Time) (int, error) 
 func getLoginHistory(ctx context.Context, email string, limit int) ([]LoginEvent, error) {
 	rows, err := db.Query(ctx, `
 		SELECT login_date, login_time, streak_count
-		FROM english_zoa.login_events
+		FROM phraseup.login_events
 		WHERE email = $1
 		ORDER BY login_date DESC
 		LIMIT $2
@@ -217,6 +270,19 @@ func registerProfileRoutes(r *gin.Engine) {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	r.GET("/api/team", func(c *gin.Context) {
+		if _, ok := requireEmail(c); !ok {
+			return
+		}
+		members, err := getTeam(c.Request.Context())
+		if err != nil {
+			log.Printf("getTeam: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "team unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"members": members})
 	})
 
 	r.GET("/api/calendar", func(c *gin.Context) {
