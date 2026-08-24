@@ -236,15 +236,19 @@ func loadDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQuest
 	return qs, rows.Err()
 }
 
-// ensureDailyQuiz returns today's 10 questions for this user, generating them
-// on first request of the day. Returns (nil, nil) when the phrase pool is
-// still empty (brand new deploy, Slack/AI not wired up yet, first request).
+// ensureDailyQuiz returns today's dailyQuizSize questions for this user,
+// generating any missing ones on first request of the day. Tops up by `seq`
+// slot rather than assuming existing rows are a contiguous prefix — a set
+// that's short (e.g. left over from a schema/pool change mid-day) gets its
+// remaining slots filled in without disturbing already-answered questions.
+// Returns (nil, nil) when the phrase pool is still completely empty (brand
+// new deploy, Slack/AI/static seed not run yet).
 func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQuestion, error) {
 	existing, err := loadDailyQuiz(ctx, email, dateStr)
 	if err != nil {
 		return nil, err
 	}
-	if len(existing) > 0 {
+	if len(existing) >= dailyQuizSize {
 		return existing, nil
 	}
 
@@ -253,15 +257,27 @@ func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQue
 		return nil, err
 	}
 	if total == 0 {
-		return nil, nil
+		return existing, nil // nothing to top up with yet; existing (possibly empty) is all there is
 	}
 
-	phraseIDs, err := pickDailyPhraseIDs(ctx, email, dailyQuizSize)
+	haveSeq := make(map[int]bool, len(existing))
+	for _, q := range existing {
+		haveSeq[q.Seq] = true
+	}
+
+	phraseIDs, err := pickDailyPhraseIDs(ctx, email, dailyQuizSize-len(existing))
 	if err != nil {
 		return nil, err
 	}
 
-	for seq, phraseID := range phraseIDs {
+	next := 0
+	for seq := 0; seq < dailyQuizSize && next < len(phraseIDs); seq++ {
+		if haveSeq[seq] {
+			continue
+		}
+		phraseID := phraseIDs[next]
+		next++
+
 		var category, english, korean string
 		if err := db.QueryRow(ctx, `
 			SELECT category, english_text, korean_text FROM english_zoa.phrases WHERE id = $1

@@ -1,4 +1,7 @@
-# English_zoa
+# PhraseUp
+
+(코드네임/리포·서비스명은 여전히 `English_zoa`/`english-zoa` — 앱 내 브랜드만
+"PhraseUp"으로 변경됨. 리포·URL까지 바꾸려면 플랫폼팀 재등록이 필요해서 별도 진행.)
 
 매일 10문제씩 **비즈니스 영어** 퀴즈를 풀고 경쟁하는 팀 학습 앱. Applied 내부
 **Apps Platform v2**(Cloud Run · IAP/Okta) 위에서 동작하며, 배포 패턴은

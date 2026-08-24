@@ -7,7 +7,7 @@ function TopBar({ route, me }) {
   ];
   return (
     <div className="topbar">
-      <div className="topbar-brand">English<span>_zoa</span></div>
+      <div className="topbar-brand">Phrase<span>Up</span></div>
       <nav className="topbar-nav">
         {tabs.map((t) => (
           <a key={t.key} href={`#${t.key}`} className={route === t.key ? 'active' : ''}>
