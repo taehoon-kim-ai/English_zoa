@@ -16,16 +16,26 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ── section: quiz — 10 fresh questions a day, multiple-choice + word-order ──
-// Owns phraseup.quiz_questions. Reads phraseup.phrases (owned by
-// phrase.go, topped up by ai.go) but never writes it. Work on this file +
-// web/quiz.jsx without touching the other sections.
+// ── section: quiz — two independent tracks, each a user-picked test length ──
+// Owns phraseup.quiz_questions. Reads phraseup.phrases (owned by phrase.go,
+// topped up by ai.go) but never writes it. Work on this file + web/quiz.jsx
+// without touching the other sections.
 //
-// Each user gets a fixed set of dailyQuizSize questions generated once per
-// day (Seoul time) and stored — refreshing the page doesn't reshuffle them,
-// and each question is graded exactly once (recordQuizAnswer). "Score" here
-// is just the count of correct answers (score.go) — wrong answers are never
-// subtracted, there's nothing to subtract from.
+// Vocab track only ever tests category='vocabulary' phrases (single terms —
+// multiple_choice only, word-order doesn't make sense for one word) and only
+// ever offers vocabulary items as multiple-choice distractors. Phrase track
+// only tests category='expression' (full sentences — multiple_choice or
+// word_order) with expression-only distractors. Earlier versions picked
+// distractors from the whole pool regardless of category, so a vocabulary
+// question could show full-sentence wrong answers — that's the bug this
+// track split + category-scoped distractor queries fixes.
+//
+// A "session" is one user-initiated test run (POST /api/quiz/start) of a
+// chosen length — not tied to a calendar day, so a session_id (not
+// quiz_date) is the grouping key and there's no cap on how many times a day
+// someone can test. Each question is still graded exactly once
+// (recordQuizAnswer) and "score" is a plain COUNT of correct answers
+// (score.go) — wrong answers never subtract from anything.
 //
 // The correct answer is never sent to the client before grading: multiple-
 // choice options carry real phrase ids (fine, since nothing else in the
@@ -35,30 +45,73 @@ import (
 
 var quizSchemaStmts = []string{
 	// quiz_attempts belonged to the old "infinite pool, one-shot per phrase"
-	// design — replaced by the fixed daily set below.
+	// design; the first quiz_questions shape (date-based, single fixed daily
+	// set) is superseded by the session-based one below. Both migrations are
+	// one-time and guarded so a normal deploy never re-runs them.
 	`DROP TABLE IF EXISTS phraseup.quiz_attempts`,
+	`DO $$ BEGIN
+		IF EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'phraseup' AND table_name = 'quiz_questions' AND column_name = 'quiz_date'
+		) THEN
+			DROP TABLE phraseup.quiz_questions;
+		END IF;
+	END $$`,
 	`CREATE TABLE IF NOT EXISTS phraseup.quiz_questions (
 		id             SERIAL PRIMARY KEY,
 		email          TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
-		quiz_date      DATE NOT NULL,
+		session_id     TEXT NOT NULL,
+		track          TEXT NOT NULL CHECK (track IN ('vocab', 'phrase')),
 		seq            SMALLINT NOT NULL,
 		phrase_id      INT NOT NULL REFERENCES phraseup.phrases(id) ON DELETE CASCADE,
-		category       TEXT NOT NULL DEFAULT 'expression',
+		category       TEXT NOT NULL,
 		question_type  TEXT NOT NULL CHECK (question_type IN ('multiple_choice', 'word_order')),
 		prompt         TEXT NOT NULL,
 		options        JSONB NOT NULL,
 		correct_answer JSONB NOT NULL,
 		result         TEXT CHECK (result IN ('correct', 'incorrect')),
 		answered_at    TIMESTAMPTZ,
-		UNIQUE (email, quiz_date, seq)
+		created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		UNIQUE (email, session_id, seq)
 	)`,
-	`ALTER TABLE phraseup.quiz_questions ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'expression'`,
 }
 
 const (
-	dailyQuizSize               = 10
-	minPhrasesForMultipleChoice = 4 // 1 correct + 3 distractors
+	trackVocab  = "vocab"
+	trackPhrase = "phrase"
+
+	minPhrasesForMultipleChoice = 4 // 1 correct + 3 distractors, same category
 )
+
+var (
+	vocabCounts  = []int{10, 20, 30}
+	phraseCounts = []int{5, 10, 15}
+)
+
+func trackCategory(track string) string {
+	if track == trackVocab {
+		return "vocabulary"
+	}
+	return "expression"
+}
+
+func validTrackCount(track string, count int) bool {
+	var allowed []int
+	switch track {
+	case trackVocab:
+		allowed = vocabCounts
+	case trackPhrase:
+		allowed = phraseCounts
+	default:
+		return false
+	}
+	for _, c := range allowed {
+		if c == count {
+			return true
+		}
+	}
+	return false
+}
 
 type QuizOption struct {
 	ID         string `json:"id"`
@@ -109,10 +162,13 @@ func buildWordOrderChips(english string) ([]QuizOption, []string) {
 	return options, correctOrder
 }
 
-func buildMultipleChoiceQuestion(ctx context.Context, phraseID int, english, korean string) (prompt string, options []QuizOption, answer quizAnswerKey, err error) {
+// buildMultipleChoiceQuestion draws its 3 distractors from the SAME category
+// as the question phrase — a vocabulary word only ever competes against
+// other vocabulary words, never against full-sentence expressions.
+func buildMultipleChoiceQuestion(ctx context.Context, phraseID int, category, english, korean string) (prompt string, options []QuizOption, answer quizAnswerKey, err error) {
 	rows, err := db.Query(ctx, `
-		SELECT id, korean_text FROM phraseup.phrases WHERE id != $1 ORDER BY random() LIMIT 3
-	`, phraseID)
+		SELECT id, korean_text FROM phraseup.phrases WHERE id != $1 AND category = $2 ORDER BY random() LIMIT 3
+	`, phraseID, category)
 	if err != nil {
 		return "", nil, quizAnswerKey{}, err
 	}
@@ -141,13 +197,17 @@ func buildWordOrderQuestion(english, korean string) (prompt string, options []Qu
 	return korean, options, quizAnswerKey{Order: order}
 }
 
-// chooseQuestionType picks a type for one phrase. Word-order needs at least
-// two words to be a meaningful puzzle, so single-word vocabulary items are
-// always multiple-choice; multiple-choice needs 3 distractors from other
-// phrases, so it's only offered once the pool is big enough.
-func chooseQuestionType(category string, wordCount, totalPhrases int) string {
-	canWordOrder := category != "vocabulary" && wordCount >= 2
-	canMultipleChoice := totalPhrases >= minPhrasesForMultipleChoice
+// chooseQuestionType picks a type for one phrase. Vocab track is always
+// multiple-choice (a single word/term can't make a word-order puzzle).
+// Phrase track mixes both when the expression pool is big enough for
+// multiple-choice distractors; below that it falls back to word-order
+// (which only needs the one phrase it's built from).
+func chooseQuestionType(track string, wordCount, categoryTotal int) string {
+	if track == trackVocab {
+		return "multiple_choice"
+	}
+	canWordOrder := wordCount >= 2
+	canMultipleChoice := categoryTotal >= minPhrasesForMultipleChoice
 	switch {
 	case canWordOrder && canMultipleChoice:
 		if rand.Intn(2) == 0 {
@@ -161,18 +221,19 @@ func chooseQuestionType(category string, wordCount, totalPhrases int) string {
 	}
 }
 
-// pickDailyPhraseIDs prefers phrases this user has never been quizzed on
-// before (across all days); once that runs out it pads with random repeats
-// so a small team with a small phrase pool still gets a full set of 10.
-func pickDailyPhraseIDs(ctx context.Context, email string, count int) ([]int, error) {
+// pickSessionPhraseIDs prefers phrases (within the given category) this user
+// has never been quizzed on before (across all past sessions); once that
+// runs out it pads with random repeats so a small pool still yields a full
+// session.
+func pickSessionPhraseIDs(ctx context.Context, email, category string, count int) ([]int, error) {
 	rows, err := db.Query(ctx, `
 		SELECT p.id FROM phraseup.phrases p
-		WHERE NOT EXISTS (
-			SELECT 1 FROM phraseup.quiz_questions q WHERE q.email = $1 AND q.phrase_id = p.id
+		WHERE p.category = $1 AND NOT EXISTS (
+			SELECT 1 FROM phraseup.quiz_questions q WHERE q.email = $2 AND q.phrase_id = p.id
 		)
 		ORDER BY random()
-		LIMIT $2
-	`, email, count)
+		LIMIT $3
+	`, category, email, count)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +255,7 @@ func pickDailyPhraseIDs(ctx context.Context, email string, count int) ([]int, er
 	}
 
 	need := count - len(ids)
-	padRows, err := db.Query(ctx, `SELECT id FROM phraseup.phrases ORDER BY random() LIMIT $1`, need)
+	padRows, err := db.Query(ctx, `SELECT id FROM phraseup.phrases WHERE category = $1 ORDER BY random() LIMIT $2`, category, need)
 	if err != nil {
 		return nil, err
 	}
@@ -209,13 +270,13 @@ func pickDailyPhraseIDs(ctx context.Context, email string, count int) ([]int, er
 	return ids, padRows.Err()
 }
 
-func loadDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQuestion, error) {
+func loadSession(ctx context.Context, email, sessionID string) ([]DailyQuizQuestion, error) {
 	rows, err := db.Query(ctx, `
 		SELECT id, seq, category, question_type, prompt, options, COALESCE(result, '')
 		FROM phraseup.quiz_questions
-		WHERE email = $1 AND quiz_date = $2
+		WHERE email = $1 AND session_id = $2
 		ORDER BY seq
-	`, email, dateStr)
+	`, email, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -236,56 +297,39 @@ func loadDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQuest
 	return qs, rows.Err()
 }
 
-// ensureDailyQuiz returns today's dailyQuizSize questions for this user,
-// generating any missing ones on first request of the day. Tops up by `seq`
-// slot rather than assuming existing rows are a contiguous prefix — a set
-// that's short (e.g. left over from a schema/pool change mid-day) gets its
-// remaining slots filled in without disturbing already-answered questions.
-// Returns (nil, nil) when the phrase pool is still completely empty (brand
-// new deploy, Slack/AI/static seed not run yet).
-func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQuestion, error) {
-	existing, err := loadDailyQuiz(ctx, email, dateStr)
+func newSessionID() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 36) + strconv.FormatInt(rand.Int63(), 36)
+}
+
+// startQuizSession generates a fresh set of `count` questions for one track
+// and returns its session id + questions. Returns ("", nil, nil) — not an
+// error — when the track's category has no phrases yet at all.
+func startQuizSession(ctx context.Context, email, track string, count int) (string, []DailyQuizQuestion, error) {
+	category := trackCategory(track)
+
+	var categoryTotal int
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases WHERE category = $1`, category).Scan(&categoryTotal); err != nil {
+		return "", nil, err
+	}
+	if categoryTotal == 0 {
+		return "", nil, nil
+	}
+
+	phraseIDs, err := pickSessionPhraseIDs(ctx, email, category, count)
 	if err != nil {
-		return nil, err
-	}
-	if len(existing) >= dailyQuizSize {
-		return existing, nil
+		return "", nil, err
 	}
 
-	var total int
-	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases`).Scan(&total); err != nil {
-		return nil, err
-	}
-	if total == 0 {
-		return existing, nil // nothing to top up with yet; existing (possibly empty) is all there is
-	}
-
-	haveSeq := make(map[int]bool, len(existing))
-	for _, q := range existing {
-		haveSeq[q.Seq] = true
-	}
-
-	phraseIDs, err := pickDailyPhraseIDs(ctx, email, dailyQuizSize-len(existing))
-	if err != nil {
-		return nil, err
-	}
-
-	next := 0
-	for seq := 0; seq < dailyQuizSize && next < len(phraseIDs); seq++ {
-		if haveSeq[seq] {
-			continue
-		}
-		phraseID := phraseIDs[next]
-		next++
-
-		var category, english, korean string
+	sessionID := newSessionID()
+	for seq, phraseID := range phraseIDs {
+		var english, korean string
 		if err := db.QueryRow(ctx, `
-			SELECT category, english_text, korean_text FROM phraseup.phrases WHERE id = $1
-		`, phraseID).Scan(&category, &english, &korean); err != nil {
-			return nil, err
+			SELECT english_text, korean_text FROM phraseup.phrases WHERE id = $1
+		`, phraseID).Scan(&english, &korean); err != nil {
+			return "", nil, err
 		}
 		wordCount := len(strings.Fields(english))
-		qtype := chooseQuestionType(category, wordCount, total)
+		qtype := chooseQuestionType(track, wordCount, categoryTotal)
 
 		var (
 			prompt  string
@@ -293,9 +337,9 @@ func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQue
 			answer  quizAnswerKey
 		)
 		if qtype == "multiple_choice" {
-			prompt, options, answer, err = buildMultipleChoiceQuestion(ctx, phraseID, english, korean)
+			prompt, options, answer, err = buildMultipleChoiceQuestion(ctx, phraseID, category, english, korean)
 			if err != nil {
-				return nil, err
+				return "", nil, err
 			}
 		} else {
 			prompt, options, answer = buildWordOrderQuestion(english, korean)
@@ -303,23 +347,75 @@ func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQue
 
 		optionsJSON, err := json.Marshal(options)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		answerJSON, err := json.Marshal(answer)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		if _, err := db.Exec(ctx, `
 			INSERT INTO phraseup.quiz_questions
-				(email, quiz_date, seq, phrase_id, category, question_type, prompt, options, correct_answer)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			ON CONFLICT (email, quiz_date, seq) DO NOTHING
-		`, email, dateStr, seq, phraseID, category, qtype, prompt, optionsJSON, answerJSON); err != nil {
-			return nil, err
+				(email, session_id, track, seq, phrase_id, category, question_type, prompt, options, correct_answer)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`, email, sessionID, track, seq, phraseID, category, qtype, prompt, optionsJSON, answerJSON); err != nil {
+			return "", nil, err
 		}
 	}
 
-	return loadDailyQuiz(ctx, email, dateStr)
+	questions, err := loadSession(ctx, email, sessionID)
+	return sessionID, questions, err
+}
+
+type QuizDayStat struct {
+	Date      string `json:"date"`
+	Attempted int    `json:"attempted"`
+	Correct   int    `json:"correct"`
+}
+
+// getQuizHistory returns per-day (Asia/Seoul) attempted/correct counts from
+// the last `days` days, newest first — shown on the quiz page's sidebar
+// alongside the login streak (profile.go's streak, unrelated: this is about
+// quiz activity specifically, not login activity).
+func getQuizHistory(ctx context.Context, email string, days int) ([]QuizDayStat, error) {
+	rows, err := db.Query(ctx, `
+		SELECT (answered_at AT TIME ZONE 'Asia/Seoul')::date AS day,
+		       COUNT(*) AS attempted,
+		       COUNT(*) FILTER (WHERE result = 'correct') AS correct
+		FROM phraseup.quiz_questions
+		WHERE email = $1
+		  AND answered_at IS NOT NULL
+		  AND answered_at >= NOW() - make_interval(days => $2)
+		GROUP BY day
+		ORDER BY day DESC
+	`, email, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := []QuizDayStat{}
+	for rows.Next() {
+		var day time.Time
+		var s QuizDayStat
+		if err := rows.Scan(&day, &s.Attempted, &s.Correct); err != nil {
+			continue
+		}
+		s.Date = day.Format("2006-01-02")
+		stats = append(stats, s)
+	}
+	return stats, rows.Err()
+}
+
+func tallyResults(qs []DailyQuizQuestion) (answered, correct int) {
+	for _, q := range qs {
+		if q.Result != "" {
+			answered++
+			if q.Result == "correct" {
+				correct++
+			}
+		}
+	}
+	return
 }
 
 func slicesEqual(a, b []string) bool {
@@ -395,9 +491,17 @@ func recordQuizAnswer(ctx context.Context, email string, questionID int, selecte
 }
 
 func registerQuizRoutes(r *gin.Engine) {
-	r.GET("/api/quiz/today", func(c *gin.Context) {
+	r.POST("/api/quiz/start", func(c *gin.Context) {
 		email, ok := requireEmail(c)
 		if !ok {
+			return
+		}
+		var body struct {
+			Track string `json:"track"`
+			Count int    `json:"count"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil || !validTrackCount(body.Track, body.Count) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid track/count"})
 			return
 		}
 		ctx := c.Request.Context()
@@ -406,11 +510,10 @@ func registerQuizRoutes(r *gin.Engine) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "quiz unavailable"})
 			return
 		}
-		// Feed the pool before building today's quiz: the full curated
-		// static list (phrase.go, one-time bulk seed), one Slack-sourced
-		// phrase for today if configured, and an AI top-up batch if the pool
-		// is running low (ai.go) — all best-effort, quiz generation proceeds
-		// either way.
+		// Feed the pool before building the session: full curated static list
+		// (phrase.go, one-time bulk seed), one Slack-sourced phrase for today
+		// if configured, and an AI top-up batch if running low (ai.go) — all
+		// best-effort.
 		if err := seedStaticPhrasesIfMissing(ctx); err != nil {
 			log.Printf("seedStaticPhrasesIfMissing: %v", err)
 		}
@@ -419,32 +522,58 @@ func registerQuizRoutes(r *gin.Engine) {
 		}
 		topUpPhrasePoolIfLow(ctx)
 
-		dateStr := time.Now().In(seoulTZ).Format("2006-01-02")
-		qs, err := ensureDailyQuiz(ctx, email, dateStr)
+		sessionID, qs, err := startQuizSession(ctx, email, body.Track, body.Count)
 		if err != nil {
-			log.Printf("ensureDailyQuiz: %v", err)
+			log.Printf("startQuizSession: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "quiz unavailable"})
 			return
 		}
 		if qs == nil {
-			c.JSON(http.StatusOK, gin.H{"questions": []DailyQuizQuestion{}, "message": "No phrases yet — check back soon."})
+			c.JSON(http.StatusOK, gin.H{"session_id": "", "questions": []DailyQuizQuestion{}, "message": "No content for this track yet — check back soon."})
 			return
 		}
-		answered, correct := 0, 0
-		for _, q := range qs {
-			if q.Result != "" {
-				answered++
-				if q.Result == "correct" {
-					correct++
-				}
-			}
+		answered, correct := tallyResults(qs)
+		c.JSON(http.StatusOK, gin.H{
+			"session_id":     sessionID,
+			"questions":      qs,
+			"total":          len(qs),
+			"answered_count": answered,
+			"correct_count":  correct,
+		})
+	})
+
+	r.GET("/api/quiz/session/:id", func(c *gin.Context) {
+		email, ok := requireEmail(c)
+		if !ok {
+			return
 		}
+		qs, err := loadSession(c.Request.Context(), email, c.Param("id"))
+		if err != nil {
+			log.Printf("loadSession: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "quiz unavailable"})
+			return
+		}
+		answered, correct := tallyResults(qs)
 		c.JSON(http.StatusOK, gin.H{
 			"questions":      qs,
 			"total":          len(qs),
 			"answered_count": answered,
 			"correct_count":  correct,
 		})
+	})
+
+	r.GET("/api/quiz/history", func(c *gin.Context) {
+		email, ok := requireEmail(c)
+		if !ok {
+			return
+		}
+		stats, err := getQuizHistory(c.Request.Context(), email, 30)
+		if err != nil {
+			log.Printf("getQuizHistory: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "history unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"days": stats})
 	})
 
 	r.POST("/api/quiz/answer", func(c *gin.Context) {

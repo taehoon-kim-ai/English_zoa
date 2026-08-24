@@ -8,9 +8,28 @@ function medal(i) {
   return i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1;
 }
 
+// dateStr/addDays are plain helpers for local calendar-date math. Built from
+// local getters, NOT toISOString() — toISOString() converts to UTC, which
+// silently shifts the date by one whenever the browser's local timezone is
+// ahead of UTC (e.g. Asia/Seoul, UTC+9): local midnight becomes the previous
+// day's evening in UTC. That bug made a single "back one day" arrow click
+// jump back two days.
+function dateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function addDays(str, delta) {
+  const d = new Date(str + 'T00:00:00');
+  d.setDate(d.getDate() + delta);
+  return dateStr(d);
+}
+
 function TedTalkCard() {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = dateStr(new Date());
   const [date, setDate] = useStateMain(todayStr);
+  const [direction, setDirection] = useStateMain('none'); // 'left' | 'right' | 'none' — which way the strip just slid
   const [talk, setTalk] = useStateMain(null);
   const [error, setError] = useStateMain('');
 
@@ -21,19 +40,18 @@ function TedTalkCard() {
   if (error) return <div className="card state-msg">{error}</div>;
   if (!talk) return <div className="card state-msg">Loading today's talk...</div>;
 
-  const strip = [];
-  const center = new Date(date + 'T00:00:00');
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(center);
-    d.setDate(d.getDate() - i);
-    strip.push(d.toISOString().slice(0, 10));
-  }
+  // Center-anchored strip: the selected date always sits in the middle chip.
+  // 5 chips (not 7) — each renders wider than its min-width once padding +
+  // "MM-DD" text are accounted for, and 7 of those overflowed the card and
+  // got clipped by .strip-window's overflow:hidden.
+  const strip = [-2, -1, 0, 1, 2].map((offset) => addDays(date, offset));
 
-  const shift = (deltaDays) => {
-    const d = new Date(date + 'T00:00:00');
-    d.setDate(d.getDate() + deltaDays);
-    const next = d.toISOString().slice(0, 10);
-    setDate(next > todayStr ? todayStr : next);
+  const shift = (delta) => {
+    setDirection(delta < 0 ? 'right' : 'left'); // stepping back slides the strip rightward, forward slides left
+    setDate((d) => {
+      const next = addDays(d, delta);
+      return next > todayStr ? todayStr : next;
+    });
   };
 
   return (
@@ -52,18 +70,74 @@ function TedTalkCard() {
         <div className="tedtalk-speaker">{talk.speaker} · {date}</div>
       </div>
       <div className="tedtalk-strip">
-        <button className="strip-arrow" onClick={() => shift(-7)}>‹</button>
-        {strip.map((d) => (
-          <button
-            key={d}
-            className={`strip-chip ${d === date ? 'active' : ''}`}
-            onClick={() => d <= todayStr && setDate(d)}
-            disabled={d > todayStr}
-          >
-            {d.slice(5)}
-          </button>
-        ))}
-        <button className="strip-arrow" onClick={() => shift(7)} disabled={date >= todayStr}>›</button>
+        <button className="strip-arrow" onClick={() => shift(-1)}>‹</button>
+        <div className="strip-window">
+          <div key={date} className={`strip-track slide-${direction}`}>
+            {strip.map((d) => (
+              <div key={d} className={`strip-chip ${d === date ? 'active' : ''} ${d > todayStr ? 'future' : ''}`}>
+                {d.slice(5)}
+              </div>
+            ))}
+          </div>
+        </div>
+        <button className="strip-arrow" onClick={() => shift(1)} disabled={date >= todayStr}>›</button>
+      </div>
+      <TedTalkComments videoId={talk.video_id} />
+    </div>
+  );
+}
+
+// Comments are keyed by video_id (not date) so a repeat airing of the same
+// talk reopens the same discussion thread instead of starting a fresh one.
+function TedTalkComments({ videoId }) {
+  const [comments, setComments] = useStateMain(null);
+  const [draft, setDraft] = useStateMain('');
+  const [posting, setPosting] = useStateMain(false);
+
+  useEffectMain(() => {
+    setComments(null);
+    api(`/api/tedtalk/comments?video_id=${encodeURIComponent(videoId)}`)
+      .then((data) => setComments(data.comments || []))
+      .catch(() => setComments([]));
+  }, [videoId]);
+
+  const post = async () => {
+    const text = draft.trim();
+    if (!text) return;
+    setPosting(true);
+    try {
+      const data = await api('/api/tedtalk/comments', { method: 'POST', body: { video_id: videoId, body: text } });
+      setComments(data.comments || []);
+      setDraft('');
+    } catch (e) {
+      // best-effort — leave the draft in place so the user can retry
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  return (
+    <div className="tedtalk-comments">
+      <div className="mini-lb-title">💭 Discuss this talk</div>
+      {comments === null && <div className="state-msg">Loading comments...</div>}
+      {comments && comments.length === 0 && <div className="mini-lb-empty">No comments yet — start the discussion!</div>}
+      {comments && comments.map((c) => (
+        <div key={c.id} className="comment-row">
+          <div className="comment-meta"><span className="comment-name">{c.nickname}</span> · {c.created_at}</div>
+          <div className="comment-body">{c.body}</div>
+        </div>
+      ))}
+      <div className="comment-form">
+        <textarea
+          className="translate-input"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Share your thoughts in English..."
+          rows={2}
+        />
+        <button className="duo-btn blue" onClick={post} disabled={posting || !draft.trim()}>
+          {posting ? 'Posting...' : 'Post'}
+        </button>
       </div>
     </div>
   );

@@ -39,18 +39,21 @@ function App() {
 
   const onCorrectCountChange = (correct_count) => setMe((prev) => (prev ? { ...prev, correct_count } : prev));
 
-  const knownRoutes = ['main', 'quiz', 'profile'];
+  const knownRoutes = ['main', 'quiz', 'translate', 'profile'];
   const activeRoute = knownRoutes.includes(route) ? route : 'main';
 
   let view;
-  if (activeRoute === 'quiz') view = <QuizView onCorrectCountChange={onCorrectCountChange} showToast={showToast} />;
+  if (activeRoute === 'quiz') view = <QuizView me={me} onCorrectCountChange={onCorrectCountChange} showToast={showToast} />;
+  else if (activeRoute === 'translate') view = <TranslateView />;
   else if (activeRoute === 'profile') view = <ProfileView me={me} showToast={showToast} />;
   else view = <MainView me={me} />;
+
+  const isWide = activeRoute === 'main' || activeRoute === 'quiz';
 
   return (
     <>
       <TopBar route={activeRoute} me={me} />
-      <main className={activeRoute === 'main' ? 'main-wide' : ''}>{view}</main>
+      <main className={isWide ? 'main-wide' : ''}>{view}</main>
       {toastNode}
     </>
   );

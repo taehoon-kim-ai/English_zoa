@@ -174,4 +174,3 @@ var fallbackPhrases = []struct{ En, Ko, Category string }{
 	{"budget overrun", "예산 초과", "vocabulary"},
 	{"attrition", "인력 이탈, 자연 감소", "vocabulary"},
 }
-

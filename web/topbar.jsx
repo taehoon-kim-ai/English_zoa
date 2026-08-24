@@ -4,6 +4,7 @@ function TopBar({ route, me }) {
   const tabs = [
     { key: 'main', label: 'Main', icon: '🏠' },
     { key: 'quiz', label: 'Quiz', icon: '🧠' },
+    { key: 'translate', label: 'Translator', icon: '🌐' },
   ];
   const initial = me && me.nickname ? me.nickname.trim().charAt(0).toUpperCase() : '?';
   return (

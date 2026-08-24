@@ -26,7 +26,9 @@ function MonthCalendar({ eventByDate }) {
   const firstDay = new Date(year, month, 1);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const startWeekday = firstDay.getDay();
-  const todayStr = today.toISOString().slice(0, 10);
+  // Local Y-M-D, not toISOString() — toISOString() converts to UTC and would
+  // mislabel "today" whenever the local timezone is ahead of UTC (e.g. KST).
+  const todayStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
   const cells = [];
   for (let i = 0; i < startWeekday; i++) cells.push(null);
