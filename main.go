@@ -81,6 +81,8 @@ func main() {
 	registerLeaderboardRoutes(r)
 	registerTedTalkRoutes(r)
 	registerTranslateRoutes(r)
+	registerNewsRoutes(r)
+	registerStatsRoutes(r)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {

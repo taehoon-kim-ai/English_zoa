@@ -143,6 +143,69 @@ function TedTalkComments({ videoId }) {
   );
 }
 
+// SVG donut showing today's answered-questions progress toward the daily
+// goal (from badges.go's /api/stats).
+function DailyGoalRing() {
+  const [goal, setGoal] = useStateMain(null);
+
+  useEffectMain(() => {
+    api('/api/stats').then((data) => setGoal(data.daily_goal)).catch(() => {});
+  }, []);
+
+  if (!goal) return null;
+
+  const pct = Math.min(goal.answered / goal.goal, 1);
+  const R = 42;
+  const CIRC = 2 * Math.PI * R;
+  const done = goal.answered >= goal.goal;
+
+  return (
+    <div className="card goal-card">
+      <div className="tagline" style={{ marginBottom: 8 }}>⚡ Today's Goal</div>
+      <div className="goal-ring-wrap">
+        <svg viewBox="0 0 100 100" className="goal-ring">
+          <circle cx="50" cy="50" r={R} className="goal-ring-track" />
+          <circle
+            cx="50" cy="50" r={R}
+            className={`goal-ring-fill ${done ? 'done' : ''}`}
+            strokeDasharray={CIRC}
+            strokeDashoffset={CIRC * (1 - pct)}
+          />
+        </svg>
+        <div className="goal-ring-center">
+          <div className="goal-ring-count">{goal.answered}<span className="goal-ring-total">/{goal.goal}</span></div>
+          <div className="goal-ring-label">{done ? 'Done! 🎉' : 'questions'}</div>
+        </div>
+      </div>
+      {!done && <a href="#quiz" className="goal-cta">Take a quiz →</a>}
+    </div>
+  );
+}
+
+// Today's English business-news story (news.go) — read the headline, then
+// the full article in English.
+function NewsCard() {
+  const [story, setStory] = useStateMain(null);
+
+  useEffectMain(() => {
+    api('/api/news/today').then(setStory).catch(() => {});
+  }, []);
+
+  if (!story) return null;
+
+  return (
+    <div className="card news-card">
+      <div className="tagline" style={{ marginBottom: 8 }}>📰 Today's Business News</div>
+      {story.image_url && <img className="news-thumb" src={story.image_url} alt="" />}
+      <div className="news-title">{story.title}</div>
+      {story.summary && <div className="news-summary">{story.summary}</div>}
+      <a className="news-link" href={story.url} target="_blank" rel="noopener noreferrer">
+        Read on {story.source} →
+      </a>
+    </div>
+  );
+}
+
 function TeamPanel() {
   const [team, setTeam] = useStateMain(null);
 
@@ -206,8 +269,10 @@ function MainView({ me }) {
     <div className="main-grid">
       <div className="main-col-primary">
         <TedTalkCard />
+        <NewsCard />
       </div>
       <div className="main-col-sidebar">
+        <DailyGoalRing />
         <TeamPanel />
         <MiniLeaderboard me={me} />
       </div>

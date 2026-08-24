@@ -3,6 +3,41 @@
 // (api.js) and the correct-count callback from app.jsx.
 const { useState: useStateQuiz, useEffect: useEffectQuiz, useCallback: useCallbackQuiz } = React;
 
+// Pure-CSS confetti burst for the completion screen — ~40 pieces with
+// randomized position/color/delay, generated once per mount.
+const CONFETTI_COLORS = ['#58cc02', '#1cb0f6', '#ffc800', '#ff4b4b', '#ce82ff', '#ff9600'];
+
+function ConfettiBurst() {
+  const pieces = React.useMemo(() =>
+    Array.from({ length: 40 }, (_, i) => ({
+      left: Math.random() * 100,
+      delay: Math.random() * 0.8,
+      duration: 1.8 + Math.random() * 1.4,
+      color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+      rotate: Math.random() * 360,
+      size: 6 + Math.random() * 6,
+    })), []);
+  return (
+    <div className="confetti-layer" aria-hidden="true">
+      {pieces.map((p, i) => (
+        <span
+          key={i}
+          className="confetti-piece"
+          style={{
+            left: `${p.left}%`,
+            background: p.color,
+            width: p.size,
+            height: p.size * 0.6,
+            animationDelay: `${p.delay}s`,
+            animationDuration: `${p.duration}s`,
+            transform: `rotate(${p.rotate}deg)`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 const TRACKS = [
   { key: 'vocab', title: 'Vocab Quiz', icon: '🔤', desc: 'Business terms & collocations', counts: [10, 20, 30] },
   { key: 'phrase', title: 'Phrase Quiz', icon: '💬', desc: 'Full workplace sentences', counts: [5, 10, 15] },
@@ -160,14 +195,18 @@ function QuizSession({ track, count, onCorrectCountChange, showToast, onRestart 
   };
 
   if (done) {
+    const perfect = state.correct_count === state.total;
     return (
       <div className="quiz-wrap">
+        <ConfettiBurst />
         <div className="tagline">{track.icon} {track.title}</div>
         <QuizProgress answered={state.answered_count} total={state.total} correct={state.correct_count} />
         <div className="card quiz-complete">
-          <div className="quiz-complete-emoji">🎉</div>
-          <div className="quiz-complete-title">You finished all {state.total} questions!</div>
-          <div className="quiz-complete-sub">{state.correct_count} correct</div>
+          <div className="quiz-complete-emoji">{perfect ? '🏆' : '🎉'}</div>
+          <div className="quiz-complete-title">
+            {perfect ? 'Perfect score!' : `You finished all ${state.total} questions!`}
+          </div>
+          <div className="quiz-complete-sub">{state.correct_count}/{state.total} correct</div>
           <button className="duo-btn" onClick={onRestart}>Take Another Quiz</button>
         </div>
       </div>

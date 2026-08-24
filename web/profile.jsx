@@ -66,6 +66,33 @@ function MonthCalendar({ eventByDate }) {
   );
 }
 
+// Badge shelf — earned badges pop in color, unearned ones sit grayscale as
+// goals to chase (badges.go computes them live from quiz/login data).
+function BadgeShelf() {
+  const [badges, setBadges] = useStateProfile(null);
+
+  useEffectProfile(() => {
+    api('/api/stats').then((data) => setBadges(data.badges || [])).catch(() => {});
+  }, []);
+
+  if (!badges) return null;
+
+  return (
+    <div className="card" style={{ marginTop: 20 }}>
+      <div className="tagline" style={{ marginBottom: 12 }}>🏅 Badges</div>
+      <div className="badge-grid">
+        {badges.map((b) => (
+          <div key={b.id} className={`badge-cell ${b.earned ? 'earned' : ''}`} title={b.desc}>
+            <div className="badge-icon">{b.icon}</div>
+            <div className="badge-name">{b.name}</div>
+            <div className="badge-desc">{b.desc}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProfileView({ me, showToast }) {
   const [nickname, setNickname] = useStateProfile('');
   const [statusMessage, setStatusMessage] = useStateProfile('');
@@ -116,6 +143,8 @@ function ProfileView({ me, showToast }) {
         <StreakHero streak={me ? me.streak : 0} />
         {loaded && <MonthCalendar eventByDate={eventByDate} />}
       </div>
+
+      <BadgeShelf />
     </div>
   );
 }
