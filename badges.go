@@ -15,8 +15,6 @@ import (
 // badge can never be stale. Pairs with the goal ring / badge shelf in
 // web/main.jsx and web/profile.jsx.
 
-const dailyGoalQuestions = 10
-
 type Badge struct {
 	ID     string `json:"id"`
 	Icon   string `json:"icon"`
@@ -25,22 +23,54 @@ type Badge struct {
 	Earned bool   `json:"earned"`
 }
 
-type DailyGoal struct {
+type TrackGoal struct {
 	Answered int `json:"answered"`
 	Correct  int `json:"correct"`
 	Goal     int `json:"goal"`
 }
 
+type DailyGoal struct {
+	Vocab  TrackGoal `json:"vocab"`
+	Phrase TrackGoal `json:"phrase"`
+}
+
+// getDailyGoal reports today's per-track progress against the user's own
+// per-track targets (users.goal_vocab / users.goal_phrase, editable on the
+// profile page).
 func getDailyGoal(ctx context.Context, email string) (DailyGoal, error) {
-	g := DailyGoal{Goal: dailyGoalQuestions}
+	var g DailyGoal
+	if err := db.QueryRow(ctx, `
+		SELECT goal_vocab, goal_phrase FROM phraseup.users WHERE email = $1
+	`, email).Scan(&g.Vocab.Goal, &g.Phrase.Goal); err != nil {
+		return g, err
+	}
+
 	today := time.Now().In(seoulTZ).Format("2006-01-02")
-	err := db.QueryRow(ctx, `
-		SELECT COUNT(*), COUNT(*) FILTER (WHERE result = 'correct')
+	rows, err := db.Query(ctx, `
+		SELECT track, COUNT(*), COUNT(*) FILTER (WHERE result = 'correct')
 		FROM phraseup.quiz_questions
 		WHERE email = $1 AND answered_at IS NOT NULL
 		  AND (answered_at AT TIME ZONE 'Asia/Seoul')::date = $2
-	`, email, today).Scan(&g.Answered, &g.Correct)
-	return g, err
+		GROUP BY track
+	`, email, today)
+	if err != nil {
+		return g, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var track string
+		var answered, correct int
+		if err := rows.Scan(&track, &answered, &correct); err != nil {
+			continue
+		}
+		switch track {
+		case trackVocab:
+			g.Vocab.Answered, g.Vocab.Correct = answered, correct
+		case trackPhrase:
+			g.Phrase.Answered, g.Phrase.Correct = answered, correct
+		}
+	}
+	return g, rows.Err()
 }
 
 func getBadges(ctx context.Context, email string) ([]Badge, error) {

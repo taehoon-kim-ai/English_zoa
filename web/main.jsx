@@ -143,26 +143,15 @@ function TedTalkComments({ videoId }) {
   );
 }
 
-// SVG donut showing today's answered-questions progress toward the daily
-// goal (from badges.go's /api/stats).
-function DailyGoalRing() {
-  const [goal, setGoal] = useStateMain(null);
-
-  useEffectMain(() => {
-    api('/api/stats').then((data) => setGoal(data.daily_goal)).catch(() => {});
-  }, []);
-
-  if (!goal) return null;
-
-  const pct = Math.min(goal.answered / goal.goal, 1);
+// One SVG donut for a single track's daily progress.
+function GoalRing({ label, icon, answered, goal }) {
+  const pct = Math.min(answered / goal, 1);
   const R = 42;
   const CIRC = 2 * Math.PI * R;
-  const done = goal.answered >= goal.goal;
-
+  const done = answered >= goal;
   return (
-    <div className="card goal-card">
-      <div className="tagline" style={{ marginBottom: 8 }}>⚡ Today's Goal</div>
-      <div className="goal-ring-wrap">
+    <div className="goal-ring-block">
+      <div className="goal-ring-wrap small">
         <svg viewBox="0 0 100 100" className="goal-ring">
           <circle cx="50" cy="50" r={R} className="goal-ring-track" />
           <circle
@@ -173,11 +162,35 @@ function DailyGoalRing() {
           />
         </svg>
         <div className="goal-ring-center">
-          <div className="goal-ring-count">{goal.answered}<span className="goal-ring-total">/{goal.goal}</span></div>
-          <div className="goal-ring-label">{done ? 'Done! 🎉' : 'questions'}</div>
+          <div className="goal-ring-count">{answered}<span className="goal-ring-total">/{goal}</span></div>
         </div>
       </div>
-      {!done && <a href="#quiz" className="goal-cta">Take a quiz →</a>}
+      <div className="goal-ring-label">{icon} {label}{done ? ' 🎉' : ''}</div>
+    </div>
+  );
+}
+
+// Today's per-track goals (badges.go /api/stats) — each track has its own
+// user-set target, editable on the profile page.
+function DailyGoalRing() {
+  const [goal, setGoal] = useStateMain(null);
+
+  useEffectMain(() => {
+    api('/api/stats').then((data) => setGoal(data.daily_goal)).catch(() => {});
+  }, []);
+
+  if (!goal) return null;
+
+  const allDone = goal.vocab.answered >= goal.vocab.goal && goal.phrase.answered >= goal.phrase.goal;
+
+  return (
+    <div className="card goal-card">
+      <div className="tagline" style={{ marginBottom: 8 }}>⚡ Today's Goals</div>
+      <div className="goal-rings-row">
+        <GoalRing label="Vocab" icon="🔤" answered={goal.vocab.answered} goal={goal.vocab.goal} />
+        <GoalRing label="Phrase" icon="💬" answered={goal.phrase.answered} goal={goal.phrase.goal} />
+      </div>
+      {!allDone && <a href="#quiz" className="goal-cta">Take a quiz →</a>}
     </div>
   );
 }

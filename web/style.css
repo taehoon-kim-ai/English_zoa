@@ -451,3 +451,10 @@ main.main-wide { max-width: 960px; }
   .confetti-piece, .streak-hero-flame, .day-flame { animation: none !important; }
   .confetti-layer { display: none; }
 }
+
+/* ── per-track goal rings + goal settings ─────────────────────────────── */
+.goal-rings-row { display: flex; gap: 18px; justify-content: center; }
+.goal-ring-block { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.goal-ring-wrap.small { width: 96px; height: 96px; }
+.goal-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.history-track { margin-left: 10px; }

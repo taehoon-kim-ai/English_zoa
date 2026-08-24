@@ -367,25 +367,27 @@ func startQuizSession(ctx context.Context, email, track string, count int) (stri
 }
 
 type QuizDayStat struct {
-	Date      string `json:"date"`
-	Attempted int    `json:"attempted"`
-	Correct   int    `json:"correct"`
+	Date            string `json:"date"`
+	VocabAttempted  int    `json:"vocab_attempted"`
+	VocabCorrect    int    `json:"vocab_correct"`
+	PhraseAttempted int    `json:"phrase_attempted"`
+	PhraseCorrect   int    `json:"phrase_correct"`
 }
 
-// getQuizHistory returns per-day (Asia/Seoul) attempted/correct counts from
-// the last `days` days, newest first — shown on the quiz page's sidebar
-// alongside the login streak (profile.go's streak, unrelated: this is about
-// quiz activity specifically, not login activity).
+// getQuizHistory returns per-day (Asia/Seoul) attempted/correct counts split
+// by track from the last `days` days, newest first — shown on the quiz
+// page's sidebar alongside the login streak.
 func getQuizHistory(ctx context.Context, email string, days int) ([]QuizDayStat, error) {
 	rows, err := db.Query(ctx, `
 		SELECT (answered_at AT TIME ZONE 'Asia/Seoul')::date AS day,
+		       track,
 		       COUNT(*) AS attempted,
 		       COUNT(*) FILTER (WHERE result = 'correct') AS correct
 		FROM phraseup.quiz_questions
 		WHERE email = $1
 		  AND answered_at IS NOT NULL
 		  AND answered_at >= NOW() - make_interval(days => $2)
-		GROUP BY day
+		GROUP BY day, track
 		ORDER BY day DESC
 	`, email, days)
 	if err != nil {
@@ -393,17 +395,38 @@ func getQuizHistory(ctx context.Context, email string, days int) ([]QuizDayStat,
 	}
 	defer rows.Close()
 
-	stats := []QuizDayStat{}
+	byDate := map[string]*QuizDayStat{}
+	order := []string{}
 	for rows.Next() {
 		var day time.Time
-		var s QuizDayStat
-		if err := rows.Scan(&day, &s.Attempted, &s.Correct); err != nil {
+		var track string
+		var attempted, correct int
+		if err := rows.Scan(&day, &track, &attempted, &correct); err != nil {
 			continue
 		}
-		s.Date = day.Format("2006-01-02")
-		stats = append(stats, s)
+		date := day.Format("2006-01-02")
+		s, ok := byDate[date]
+		if !ok {
+			s = &QuizDayStat{Date: date}
+			byDate[date] = s
+			order = append(order, date)
+		}
+		switch track {
+		case trackVocab:
+			s.VocabAttempted, s.VocabCorrect = attempted, correct
+		case trackPhrase:
+			s.PhraseAttempted, s.PhraseCorrect = attempted, correct
+		}
 	}
-	return stats, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	stats := make([]QuizDayStat, 0, len(order))
+	for _, date := range order {
+		stats = append(stats, *byDate[date])
+	}
+	return stats, nil
 }
 
 func tallyResults(qs []DailyQuizQuestion) (answered, correct int) {
@@ -430,6 +453,30 @@ func slicesEqual(a, b []string) bool {
 	return true
 }
 
+// wordOrderMatches grades a word-order submission by the WORD SEQUENCE the
+// chip ids spell out, not by the id sequence itself. Chip ids are minted
+// per-position, so a sentence containing the same word twice has two chips
+// that look identical on screen — tapping them in either order must count
+// as correct, and comparing raw id sequences (the old behavior) wrongly
+// failed one of those orders.
+func wordOrderMatches(options []QuizOption, submittedIDs, correctIDs []string) bool {
+	if len(submittedIDs) == 0 || len(submittedIDs) != len(correctIDs) {
+		return false
+	}
+	textByID := make(map[string]string, len(options))
+	for _, opt := range options {
+		textByID[opt.ID] = opt.Text
+	}
+	for i := range submittedIDs {
+		submittedWord, ok1 := textByID[submittedIDs[i]]
+		correctWord, ok2 := textByID[correctIDs[i]]
+		if !ok1 || !ok2 || submittedWord != correctWord {
+			return false
+		}
+	}
+	return true
+}
+
 // recordQuizAnswer grades a question exactly once — a question with a
 // stored result just returns that result again without touching the count,
 // so retries (or a slow double-click) can't be replayed for more credit. A
@@ -444,14 +491,14 @@ func recordQuizAnswer(ctx context.Context, email string, questionID int, selecte
 	defer tx.Rollback(ctx)
 
 	var qtype string
-	var answerRaw []byte
+	var answerRaw, optionsRaw []byte
 	var existingResult *string
 	err = tx.QueryRow(ctx, `
-		SELECT question_type, correct_answer, result
+		SELECT question_type, correct_answer, options, result
 		FROM phraseup.quiz_questions
 		WHERE id = $1 AND email = $2
 		FOR UPDATE
-	`, questionID, email).Scan(&qtype, &answerRaw, &existingResult)
+	`, questionID, email).Scan(&qtype, &answerRaw, &optionsRaw, &existingResult)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, false, quizAnswerKey{}, fmt.Errorf("question not found")
 	}
@@ -467,7 +514,11 @@ func recordQuizAnswer(ctx context.Context, email string, questionID int, selecte
 	case "multiple_choice":
 		correct = selectedID != "" && selectedID == answer.CorrectID
 	case "word_order":
-		correct = len(orderedIDs) > 0 && slicesEqual(orderedIDs, answer.Order)
+		var options []QuizOption
+		if err := json.Unmarshal(optionsRaw, &options); err != nil {
+			return false, false, quizAnswerKey{}, err
+		}
+		correct = wordOrderMatches(options, orderedIDs, answer.Order)
 	}
 
 	if existingResult != nil {

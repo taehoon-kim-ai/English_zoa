@@ -289,7 +289,10 @@ function QuizHistoryPanel({ streak }) {
       {days && days.map((d) => (
         <div key={d.date} className="history-row">
           <span className="history-date">{d.date.slice(5)}</span>
-          <span className="history-stats">{d.correct}/{d.attempted} correct</span>
+          <span className="history-stats">
+            {d.vocab_attempted > 0 && <span className="history-track">🔤 {d.vocab_correct}/{d.vocab_attempted}</span>}
+            {d.phrase_attempted > 0 && <span className="history-track">💬 {d.phrase_correct}/{d.phrase_attempted}</span>}
+          </span>
         </div>
       ))}
     </div>

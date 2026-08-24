@@ -22,9 +22,13 @@ var profileSchemaStmts = []string{
 		nickname       TEXT NOT NULL DEFAULT '',
 		status_message TEXT NOT NULL DEFAULT '',
 		last_active_at TIMESTAMPTZ,
+		goal_vocab     INT NOT NULL DEFAULT 10,
+		goal_phrase    INT NOT NULL DEFAULT 5,
 		created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
 	`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ`,
+	`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS goal_vocab INT NOT NULL DEFAULT 10`,
+	`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS goal_phrase INT NOT NULL DEFAULT 5`,
 	`CREATE TABLE IF NOT EXISTS phraseup.login_events (
 		email        TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
 		login_date   DATE NOT NULL,
@@ -38,6 +42,19 @@ type Profile struct {
 	Email         string `json:"email"`
 	Nickname      string `json:"nickname"`
 	StatusMessage string `json:"status_message"`
+	GoalVocab     int    `json:"goal_vocab"`
+	GoalPhrase    int    `json:"goal_phrase"`
+}
+
+// clampGoal keeps a per-day question goal in a sane range.
+func clampGoal(n, fallback int) int {
+	if n <= 0 {
+		return fallback
+	}
+	if n > 100 {
+		return 100
+	}
+	return n
 }
 
 func defaultNickname(email string) string {
@@ -61,12 +78,12 @@ func ensureUser(ctx context.Context, email string) error {
 func getUser(ctx context.Context, email string) (Profile, error) {
 	p := Profile{Email: email}
 	err := db.QueryRow(ctx, `
-		SELECT nickname, status_message FROM phraseup.users WHERE email = $1
-	`, email).Scan(&p.Nickname, &p.StatusMessage)
+		SELECT nickname, status_message, goal_vocab, goal_phrase FROM phraseup.users WHERE email = $1
+	`, email).Scan(&p.Nickname, &p.StatusMessage, &p.GoalVocab, &p.GoalPhrase)
 	return p, err
 }
 
-func updateProfile(ctx context.Context, email, nickname, statusMessage string) error {
+func updateProfile(ctx context.Context, email, nickname, statusMessage string, goalVocab, goalPhrase int) error {
 	nickname = strings.TrimSpace(nickname)
 	if nickname == "" {
 		nickname = defaultNickname(email)
@@ -78,8 +95,10 @@ func updateProfile(ctx context.Context, email, nickname, statusMessage string) e
 		statusMessage = string(r[:80])
 	}
 	_, err := db.Exec(ctx, `
-		UPDATE phraseup.users SET nickname = $2, status_message = $3 WHERE email = $1
-	`, email, nickname, statusMessage)
+		UPDATE phraseup.users
+		SET nickname = $2, status_message = $3, goal_vocab = $4, goal_phrase = $5
+		WHERE email = $1
+	`, email, nickname, statusMessage, clampGoal(goalVocab, 10), clampGoal(goalPhrase, 5))
 	return err
 }
 
@@ -240,6 +259,8 @@ func registerProfileRoutes(r *gin.Engine) {
 			"email":          email,
 			"nickname":       profile.Nickname,
 			"status_message": profile.StatusMessage,
+			"goal_vocab":     profile.GoalVocab,
+			"goal_phrase":    profile.GoalPhrase,
 			"streak":         streak,
 			"correct_count":  correctCount,
 		})
@@ -253,6 +274,8 @@ func registerProfileRoutes(r *gin.Engine) {
 		var body struct {
 			Nickname      string `json:"nickname"`
 			StatusMessage string `json:"status_message"`
+			GoalVocab     int    `json:"goal_vocab"`
+			GoalPhrase    int    `json:"goal_phrase"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -264,7 +287,7 @@ func registerProfileRoutes(r *gin.Engine) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 			return
 		}
-		if err := updateProfile(ctx, email, body.Nickname, body.StatusMessage); err != nil {
+		if err := updateProfile(ctx, email, body.Nickname, body.StatusMessage, body.GoalVocab, body.GoalPhrase); err != nil {
 			log.Printf("updateProfile: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 			return

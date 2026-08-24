@@ -89,6 +89,53 @@ func TestBuildWordOrderChipsRoundTrips(t *testing.T) {
 	}
 }
 
+// The duplicate-word case that motivated word-based grading: "the" appears
+// twice, so chips b and d render identically. A submission that swaps them
+// spells the exact same sentence and must be correct.
+func TestWordOrderMatchesDuplicateWords(t *testing.T) {
+	options := []QuizOption{
+		{ID: "a", Text: "The"},
+		{ID: "b", Text: "more"},
+		{ID: "c", Text: "the"},
+		{ID: "d", Text: "better."},
+	}
+	correct := []string{"a", "b", "c", "d"}
+
+	if !wordOrderMatches(options, []string{"a", "b", "c", "d"}, correct) {
+		t.Errorf("exact id order should match")
+	}
+
+	// Sentence with a true duplicate: "step by step by step" style.
+	dupOptions := []QuizOption{
+		{ID: "w1", Text: "step"},
+		{ID: "w2", Text: "by"},
+		{ID: "w3", Text: "step"},
+	}
+	dupCorrect := []string{"w1", "w2", "w3"}
+	// User tapped the visually-identical "step" chips in the other order.
+	if !wordOrderMatches(dupOptions, []string{"w3", "w2", "w1"}, dupCorrect) {
+		t.Errorf("swapping identical-word chips must still be correct")
+	}
+	// A genuinely wrong order must still fail.
+	if wordOrderMatches(dupOptions, []string{"w2", "w1", "w3"}, dupCorrect) {
+		t.Errorf("wrong word order must fail")
+	}
+}
+
+func TestWordOrderMatchesRejectsBadInput(t *testing.T) {
+	options := []QuizOption{{ID: "a", Text: "hi"}, {ID: "b", Text: "there"}}
+	correct := []string{"a", "b"}
+	if wordOrderMatches(options, nil, correct) {
+		t.Errorf("empty submission must fail")
+	}
+	if wordOrderMatches(options, []string{"a"}, correct) {
+		t.Errorf("short submission must fail")
+	}
+	if wordOrderMatches(options, []string{"a", "zzz"}, correct) {
+		t.Errorf("unknown chip id must fail")
+	}
+}
+
 func TestSlicesEqual(t *testing.T) {
 	cases := []struct {
 		a, b []string

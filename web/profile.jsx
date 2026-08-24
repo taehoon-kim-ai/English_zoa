@@ -96,6 +96,8 @@ function BadgeShelf() {
 function ProfileView({ me, showToast }) {
   const [nickname, setNickname] = useStateProfile('');
   const [statusMessage, setStatusMessage] = useStateProfile('');
+  const [goalVocab, setGoalVocab] = useStateProfile(10);
+  const [goalPhrase, setGoalPhrase] = useStateProfile(5);
   const [events, setEvents] = useStateProfile([]);
   const [loaded, setLoaded] = useStateProfile(false);
 
@@ -103,6 +105,8 @@ function ProfileView({ me, showToast }) {
     if (me) {
       setNickname(me.nickname);
       setStatusMessage(me.status_message);
+      if (me.goal_vocab) setGoalVocab(me.goal_vocab);
+      if (me.goal_phrase) setGoalPhrase(me.goal_phrase);
     }
   }, [me]);
 
@@ -115,7 +119,15 @@ function ProfileView({ me, showToast }) {
 
   const save = async () => {
     try {
-      await api('/api/profile', { method: 'POST', body: { nickname, status_message: statusMessage } });
+      await api('/api/profile', {
+        method: 'POST',
+        body: {
+          nickname,
+          status_message: statusMessage,
+          goal_vocab: parseInt(goalVocab, 10) || 10,
+          goal_phrase: parseInt(goalPhrase, 10) || 5,
+        },
+      });
       showToast('Saved ✓');
     } catch (e) {
       showToast(e.message);
@@ -135,6 +147,16 @@ function ProfileView({ me, showToast }) {
         <div className="profile-field">
           <label>Status message</label>
           <input value={statusMessage} onChange={(e) => setStatusMessage(e.target.value)} maxLength={80} />
+        </div>
+        <div className="goal-fields">
+          <div className="profile-field">
+            <label>🔤 Daily vocab goal</label>
+            <input type="number" min="1" max="100" value={goalVocab} onChange={(e) => setGoalVocab(e.target.value)} />
+          </div>
+          <div className="profile-field">
+            <label>💬 Daily phrase goal</label>
+            <input type="number" min="1" max="100" value={goalPhrase} onChange={(e) => setGoalPhrase(e.target.value)} />
+          </div>
         </div>
         <button className="duo-btn" onClick={save}>Save</button>
       </div>
