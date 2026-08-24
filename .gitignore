@@ -1,0 +1,5 @@
+/english-zoa
+/English_zoa
+*.log
+.DS_Store
+node_modules/
