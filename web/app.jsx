@@ -1,12 +1,12 @@
 // ── app shell — routing + shared me/score state + toast. Section views
-// (HomeView, QuizView, ProfileView, LeaderboardView, TopBar) live in their
+// (QuizView, ProfileView, LeaderboardView, TopBar) live in their
 // own files and are loaded before this one (see index.html).
 const { useState: useStateApp, useEffect: useEffectApp, useCallback: useCallbackApp, useRef: useRefApp } = React;
 
 function useHashRoute() {
-  const [route, setRoute] = useStateApp(() => window.location.hash.replace('#', '') || 'home');
+  const [route, setRoute] = useStateApp(() => window.location.hash.replace('#', '') || 'quiz');
   useEffectApp(() => {
-    const onHashChange = () => setRoute(window.location.hash.replace('#', '') || 'home');
+    const onHashChange = () => setRoute(window.location.hash.replace('#', '') || 'quiz');
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
@@ -38,14 +38,13 @@ function App() {
 
   const onScoreChange = (score) => setMe((prev) => (prev ? { ...prev, score } : prev));
 
-  const knownRoutes = ['home', 'quiz', 'profile', 'leaderboard'];
-  const activeRoute = knownRoutes.includes(route) ? route : 'home';
+  const knownRoutes = ['quiz', 'profile', 'leaderboard'];
+  const activeRoute = knownRoutes.includes(route) ? route : 'quiz';
 
   let view;
-  if (activeRoute === 'quiz') view = <QuizView onScoreChange={onScoreChange} showToast={showToast} />;
-  else if (activeRoute === 'profile') view = <ProfileView me={me} showToast={showToast} />;
+  if (activeRoute === 'profile') view = <ProfileView me={me} showToast={showToast} />;
   else if (activeRoute === 'leaderboard') view = <LeaderboardView me={me} />;
-  else view = <HomeView me={me} onScoreChange={onScoreChange} showToast={showToast} />;
+  else view = <QuizView onScoreChange={onScoreChange} showToast={showToast} />;
 
   return (
     <>

@@ -15,10 +15,9 @@ import (
 // addScoreTx from inside its own DB transaction.
 
 const (
-	streakBonusEvery    = 7  // every Nth consecutive login day...
-	streakBonusPoints   = 10 // ...awards this many bonus points (profile.go)
-	correctAnswerPoints = 1  // flashcard "알아요" (phrase.go)
-	quizCorrectPoints   = 2  // quiz multiple-choice, worth more — it's graded, not self-reported (quiz.go)
+	streakBonusEvery  = 7  // every Nth consecutive login day...
+	streakBonusPoints = 10 // ...awards this many bonus points (profile.go)
+	quizCorrectPoints = 2  // per correct quiz question, either type (quiz.go)
 )
 
 var scoreSchemaStmts = []string{

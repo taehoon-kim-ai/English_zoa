@@ -3,18 +3,15 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
-	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 )
 
-// ── section: 오늘의 문구 (플래시카드) ─────────────────────────────────────────
-// Owns english_zoa.phrases + english_zoa.card_attempts. Work on this file +
-// web/home.jsx (+ slack.go for the Slack sourcing) without touching the
-// other sections. quiz.go reads english_zoa.phrases but doesn't write it.
+// ── section: 문구 소스 — 더 이상 자체 화면(오늘의 문구)은 없다. ensureTodayPhrase는
+// 매일 하나씩 english_zoa.phrases에 새 문구를 쌓는 내부 파이프라인으로만 쓰이고,
+// quiz.go가 이 풀에서 문제를 뽑는다. Work on this file (+ slack.go) for the
+// phrase-sourcing pipeline; work on quiz.go for how it's used in the quiz.
 
 var phraseSchemaStmts = []string{
 	// One phrase per day, deduped against the source Slack message so a
@@ -27,16 +24,9 @@ var phraseSchemaStmts = []string{
 		source_slack_ts TEXT UNIQUE,
 		created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
-
-	// One attempt row per user per phrase — re-flipping updates it in place
-	// so score changes are idempotent (see recordAttempt).
-	`CREATE TABLE IF NOT EXISTS english_zoa.card_attempts (
-		email        TEXT NOT NULL REFERENCES english_zoa.users(email) ON DELETE CASCADE,
-		phrase_id    INT NOT NULL REFERENCES english_zoa.phrases(id) ON DELETE CASCADE,
-		result       TEXT NOT NULL CHECK (result IN ('known', 'unknown')),
-		attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		PRIMARY KEY (email, phrase_id)
-	)`,
+	// card_attempts belonged to the removed flashcard screen — drop it if a
+	// prior deploy created it.
+	`DROP TABLE IF EXISTS english_zoa.card_attempts`,
 }
 
 type Phrase struct {
@@ -46,10 +36,11 @@ type Phrase struct {
 	PhraseDate  string `json:"phrase_date"`
 }
 
-// ensureTodayPhrase returns today's phrase, creating it on first request of
-// the day. Tries Slack first (fetchPhraseFromSlack, slack.go); falls back to
-// a built-in business-English phrase list when Slack isn't reachable/
-// configured or parsing fails, so the flashcard always has something to show.
+// ensureTodayPhrase makes sure today's phrase exists in the pool, creating it
+// on first call of the day. Tries Slack first (fetchPhraseFromSlack,
+// slack.go); falls back to a built-in business-English phrase when Slack
+// isn't reachable/configured or parsing fails, so the pool keeps growing by
+// one phrase a day either way.
 func ensureTodayPhrase(ctx context.Context) (Phrase, error) {
 	seoulNow := time.Now().In(seoulTZ)
 	dateStr := seoulNow.Format("2006-01-02")
@@ -92,70 +83,11 @@ func ensureTodayPhrase(ctx context.Context) (Phrase, error) {
 	return p, nil
 }
 
-// getAttempt returns "known"/"unknown", or "" if the user hasn't answered yet.
-func getAttempt(ctx context.Context, email string, phraseID int) (string, error) {
-	var result string
-	err := db.QueryRow(ctx, `
-		SELECT result FROM english_zoa.card_attempts WHERE email = $1 AND phrase_id = $2
-	`, email, phraseID).Scan(&result)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	return result, err
-}
-
-// recordAttempt upserts the user's answer for a phrase and returns the score
-// delta actually applied. Flipping known→unknown or re-answering the same way
-// doesn't re-award points — only a transition into "known" scores, and a
-// walk-back out of "known" refunds it — so replaying a card can't farm score.
-func recordAttempt(ctx context.Context, email string, phraseID int, result string) (int, error) {
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback(ctx)
-
-	var prevResult string
-	err = tx.QueryRow(ctx, `
-		SELECT result FROM english_zoa.card_attempts WHERE email = $1 AND phrase_id = $2 FOR UPDATE
-	`, email, phraseID).Scan(&prevResult)
-	hadKnown := err == nil && prevResult == "known"
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return 0, err
-	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO english_zoa.card_attempts (email, phrase_id, result, attempted_at)
-		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (email, phrase_id) DO UPDATE SET result = EXCLUDED.result, attempted_at = NOW()
-	`, email, phraseID, result); err != nil {
-		return 0, err
-	}
-
-	delta := 0
-	switch {
-	case result == "known" && !hadKnown:
-		delta = correctAnswerPoints
-	case result == "unknown" && hadKnown:
-		delta = -correctAnswerPoints
-	}
-	if delta != 0 {
-		if err := addScoreTx(ctx, tx, email, delta); err != nil {
-			return 0, err
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
-	}
-	return delta, nil
-}
-
-// fallbackPhrases seeds the flashcard when Slack isn't configured yet or a
-// day's message doesn't parse — picked deterministically by day-of-year so
-// everyone on the team sees the same fallback phrase on a given day. Content
-// is business English (meetings, email, status updates) — that's the app's
-// whole point, not general idioms.
+// fallbackPhrases seeds the pool when Slack isn't configured yet or a day's
+// message doesn't parse — picked deterministically by day-of-year so
+// everyone on the team gets the same fallback phrase added on a given day.
+// Content is business English (meetings, email, status updates) — that's the
+// app's whole point, not general idioms.
 var fallbackPhrases = []struct{ En, Ko string }{
 	{"Let's circle back on this next week.", "이건 다음 주에 다시 논의해요."},
 	{"Could you walk me through the numbers?", "숫자 좀 설명해 주시겠어요?"},
@@ -176,57 +108,4 @@ var fallbackPhrases = []struct{ En, Ko string }{
 func fallbackPhrase(now time.Time) (string, string) {
 	p := fallbackPhrases[now.YearDay()%len(fallbackPhrases)]
 	return p.En, p.Ko
-}
-
-func registerPhraseRoutes(r *gin.Engine) {
-	r.GET("/api/phrase/today", func(c *gin.Context) {
-		email, ok := requireEmail(c)
-		if !ok {
-			return
-		}
-		ctx := c.Request.Context()
-		phrase, err := ensureTodayPhrase(ctx)
-		if err != nil {
-			log.Printf("ensureTodayPhrase: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "phrase unavailable"})
-			return
-		}
-		attempt, err := getAttempt(ctx, email, phrase.ID)
-		if err != nil {
-			log.Printf("getAttempt: %v", err)
-		}
-		c.JSON(http.StatusOK, gin.H{"phrase": phrase, "attempt": attempt})
-	})
-
-	r.POST("/api/phrase/attempt", func(c *gin.Context) {
-		email, ok := requireEmail(c)
-		if !ok {
-			return
-		}
-		var body struct {
-			PhraseID int    `json:"phrase_id"`
-			Result   string `json:"result"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil || (body.Result != "known" && body.Result != "unknown") {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-			return
-		}
-		ctx := c.Request.Context()
-		if err := ensureUser(ctx, email); err != nil {
-			log.Printf("ensureUser: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "attempt failed"})
-			return
-		}
-		scoreDelta, err := recordAttempt(ctx, email, body.PhraseID, body.Result)
-		if err != nil {
-			log.Printf("recordAttempt: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "attempt failed"})
-			return
-		}
-		score, err := getScore(ctx, email)
-		if err != nil {
-			log.Printf("getScore: %v", err)
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "score_delta": scoreDelta, "score": score})
-	})
 }

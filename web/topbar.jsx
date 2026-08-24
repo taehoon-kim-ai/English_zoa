@@ -1,7 +1,6 @@
 // ── section: 상단 네비게이션 — stateless, no hook aliasing needed ────────────
 function TopBar({ route, me }) {
   const tabs = [
-    { key: 'home', label: '오늘의 문구', icon: '💬' },
     { key: 'quiz', label: '퀴즈', icon: '🧠' },
     { key: 'profile', label: '내 페이지', icon: '🙋' },
     { key: 'leaderboard', label: '리더보드', icon: '🏆' },

@@ -34,7 +34,7 @@ function LeaderboardView({ me }) {
           ))}
         </tbody>
       </table>
-      {rows.length === 0 && <div className="state-msg">아직 아무도 점수가 없어요 — 오늘의 문구부터 풀어보세요!</div>}
+      {rows.length === 0 && <div className="state-msg">아직 아무도 점수가 없어요 — 오늘의 퀴즈부터 풀어보세요!</div>}
     </div>
   );
 }

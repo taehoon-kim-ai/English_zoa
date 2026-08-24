@@ -14,10 +14,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Bootstrap only. Each feature lives in its own file — profile.go, phrase.go,
-// quiz.go, score.go — so two people can work on separate sections without
-// touching this one: main() just wires DB init + each section's
-// register*Routes(r) + static file serving.
+// Bootstrap only. Each feature lives in its own file — profile.go, quiz.go,
+// score.go (phrase.go is a shared phrase-sourcing pipeline, not its own
+// screen) — so two people can work on separate sections without touching
+// this one: main() just wires DB init + each section's register*Routes(r) +
+// static file serving.
 
 //go:embed all:web
 var webFS embed.FS
@@ -75,7 +76,6 @@ func main() {
 	r.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 
 	registerProfileRoutes(r)
-	registerPhraseRoutes(r)
 	registerQuizRoutes(r)
 	registerLeaderboardRoutes(r)
 
