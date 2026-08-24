@@ -1,7 +1,10 @@
-// ── section: 퀴즈 (하루 10문제, 객관식 + 이어맞추기) — pairs with quiz.go.
+// ── section: quiz (10 fresh questions a day) — pairs with quiz.go.
 // Independent of the other sections; only shares api() (api.js) and the
-// score callback from app.jsx.
+// correct-count callback from app.jsx.
 const { useState: useStateQuiz, useEffect: useEffectQuiz, useCallback: useCallbackQuiz } = React;
+
+const CATEGORY_LABEL = { vocabulary: 'Vocabulary', expression: 'Expression' };
+const TYPE_LABEL = { multiple_choice: 'Multiple Choice', word_order: 'Word Order' };
 
 function QuizProgress({ answered, total, correct }) {
   const pct = total ? Math.round((answered / total) * 100) : 0;
@@ -10,7 +13,7 @@ function QuizProgress({ answered, total, correct }) {
       <div className="quiz-progress-track">
         <div className="quiz-progress-fill" style={{ width: `${pct}%` }} />
       </div>
-      <div className="quiz-progress-label">오늘 {answered}/{total} 문제 · 정답 {correct}개</div>
+      <div className="quiz-progress-label">Today: {answered}/{total} answered · {correct} correct</div>
     </div>
   );
 }
@@ -43,7 +46,7 @@ function WordOrderQuestion({ q, constructed, answer, onTap, onRemove, onSubmit }
   return (
     <div className="word-order">
       <div className="word-order-build">
-        {constructed.length === 0 && <span className="word-order-placeholder">아래 단어를 순서대로 눌러서 문장을 완성하세요</span>}
+        {constructed.length === 0 && <span className="word-order-placeholder">Tap the words below in order to build the sentence</span>}
         {constructed.map((id, i) => (
           <button key={id} className="word-chip placed" onClick={() => !answer && onRemove(i)} disabled={!!answer}>
             {byId[id]}
@@ -59,17 +62,17 @@ function WordOrderQuestion({ q, constructed, answer, onTap, onRemove, onSubmit }
       </div>
       {!answer && (
         <button className="duo-btn blue" disabled={constructed.length !== q.options.length} onClick={onSubmit}>
-          확인
+          Check
         </button>
       )}
       {answer && !answer.correct && (
-        <div className="word-order-answer">정답: {correctSentence}</div>
+        <div className="word-order-answer">Answer: {correctSentence}</div>
       )}
     </div>
   );
 }
 
-function QuizView({ onScoreChange, showToast }) {
+function QuizView({ onCorrectCountChange, showToast }) {
   const [state, setState] = useStateQuiz(null); // { questions, total, answered_count, correct_count, message }
   const [error, setError] = useStateQuiz('');
   const [answer, setAnswer] = useStateQuiz(null); // { correct, selected?, correctId?, correctOrder? }
@@ -96,16 +99,18 @@ function QuizView({ onScoreChange, showToast }) {
   }, [state, currentId]);
 
   if (error) return <div className="state-msg">{error}</div>;
-  if (!state) return <div className="state-msg">오늘의 퀴즈 불러오는 중...</div>;
+  if (!state) return <div className="state-msg">Loading today's quiz...</div>;
   if (state.message) return <div className="state-msg">{state.message}</div>;
-  if (currentId === undefined) return <div className="state-msg">오늘의 퀴즈 불러오는 중...</div>;
+  if (currentId === undefined) return <div className="state-msg">Loading today's quiz...</div>;
 
   const done = currentId === null;
   const q = done ? null : state.questions.find((item) => item.id === currentId);
 
   const applyGraded = (selected, data) => {
-    onScoreChange(data.score);
-    if (data.score_delta > 0) showToast(`+${data.score_delta} 💎`);
+    if (data.newly_correct) {
+      onCorrectCountChange(data.correct_count);
+      showToast('+1 🎯');
+    }
     setAnswer({ correct: data.correct, selected, correctId: data.correct_id, correctOrder: data.correct_order });
     setState((prev) => ({
       ...prev,
@@ -142,12 +147,12 @@ function QuizView({ onScoreChange, showToast }) {
   if (done) {
     return (
       <div className="quiz-wrap">
-        <div className="tagline">Business English · 오늘의 퀴즈</div>
+        <div className="tagline">Business English · Today's Quiz</div>
         <QuizProgress answered={state.answered_count} total={state.total} correct={state.correct_count} />
         <div className="card quiz-complete">
           <div className="quiz-complete-emoji">🎉</div>
-          <div className="quiz-complete-title">오늘 {state.total}문제 다 풀었어요!</div>
-          <div className="quiz-complete-sub">정답 {state.correct_count}개 · 내일 새로운 {state.total}문제로 다시 만나요</div>
+          <div className="quiz-complete-title">You finished all {state.total} questions today!</div>
+          <div className="quiz-complete-sub">{state.correct_count} correct · a fresh set of {state.total} arrives tomorrow</div>
         </div>
       </div>
     );
@@ -155,10 +160,13 @@ function QuizView({ onScoreChange, showToast }) {
 
   return (
     <div className="quiz-wrap">
-      <div className="tagline">Business English · 오늘의 퀴즈</div>
+      <div className="tagline">Business English · Today's Quiz</div>
       <QuizProgress answered={state.answered_count} total={state.total} correct={state.correct_count} />
 
-      <div className="quiz-type-badge">{q.question_type === 'multiple_choice' ? '객관식' : '이어맞추기'}</div>
+      <div className="quiz-badges">
+        <span className="quiz-badge category">{CATEGORY_LABEL[q.category] || q.category}</span>
+        <span className="quiz-badge type">{TYPE_LABEL[q.question_type] || q.question_type}</span>
+      </div>
       <div className="card quiz-question">{q.prompt}</div>
 
       {q.question_type === 'multiple_choice' ? (
@@ -176,8 +184,8 @@ function QuizView({ onScoreChange, showToast }) {
 
       {answer && (
         <div className="quiz-feedback">
-          <div>{answer.correct ? '정답이에요! 🎉' : '아쉬워요, 다음에 맞혀봐요.'}</div>
-          <button className="duo-btn" onClick={next}>다음 문제</button>
+          <div>{answer.correct ? 'Correct! 🎉' : "Not quite — you'll get the next one."}</div>
+          <button className="duo-btn" onClick={next}>Next question</button>
         </div>
       )}
     </div>

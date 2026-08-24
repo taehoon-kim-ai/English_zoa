@@ -36,7 +36,7 @@ function App() {
 
   useEffectApp(() => { loadMe(); }, [loadMe]);
 
-  const onScoreChange = (score) => setMe((prev) => (prev ? { ...prev, score } : prev));
+  const onCorrectCountChange = (correct_count) => setMe((prev) => (prev ? { ...prev, correct_count } : prev));
 
   const knownRoutes = ['quiz', 'profile', 'leaderboard'];
   const activeRoute = knownRoutes.includes(route) ? route : 'quiz';
@@ -44,7 +44,7 @@ function App() {
   let view;
   if (activeRoute === 'profile') view = <ProfileView me={me} showToast={showToast} />;
   else if (activeRoute === 'leaderboard') view = <LeaderboardView me={me} />;
-  else view = <QuizView onScoreChange={onScoreChange} showToast={showToast} />;
+  else view = <QuizView onCorrectCountChange={onCorrectCountChange} showToast={showToast} />;
 
   return (
     <>

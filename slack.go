@@ -32,8 +32,8 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func slackChannelID() string      { return strings.TrimSpace(os.Getenv("SLACK_CHANNEL_ID")) }
-func slackSeedUserEmail() string  { return envOr("SLACK_SEED_USER_EMAIL", "taehoon.kim@applied.co") }
+func slackChannelID() string     { return strings.TrimSpace(os.Getenv("SLACK_CHANNEL_ID")) }
+func slackSeedUserEmail() string { return envOr("SLACK_SEED_USER_EMAIL", "taehoon.kim@applied.co") }
 
 func dataAPIClient() *http.Client {
 	socksPort := os.Getenv("SOCKS_PORT")

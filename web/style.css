@@ -171,10 +171,13 @@ main { flex: 1; max-width: 640px; width: 100%; margin: 0 auto; padding: 28px 18p
 .quiz-progress-fill { height: 100%; background: var(--green); border-radius: 999px; transition: width 0.3s ease; }
 .quiz-progress-label { margin-top: 6px; text-align: center; font-size: 12px; font-weight: 800; color: var(--text-muted); }
 
-.quiz-type-badge {
-  font-size: 12px; font-weight: 800; color: var(--blue-dark);
-  background: #eef9ff; border: 2px solid #cdecfc; border-radius: 999px; padding: 6px 14px;
+.quiz-badges { display: flex; gap: 8px; }
+.quiz-badge {
+  font-size: 12px; font-weight: 800;
+  border-radius: 999px; padding: 6px 14px;
 }
+.quiz-badge.category { color: var(--gold-dark); background: #fff7de; border: 2px solid #ffe9a8; }
+.quiz-badge.type { color: var(--blue-dark); background: #eef9ff; border: 2px solid #cdecfc; }
 .quiz-question {
   width: 100%;
   text-align: center;

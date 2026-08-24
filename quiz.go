@@ -16,15 +16,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ── section: 퀴즈 — 하루 10문제, 객관식 + 이어맞추기(주관식) ──────────────────
+// ── section: quiz — 10 fresh questions a day, multiple-choice + word-order ──
 // Owns english_zoa.quiz_questions. Reads english_zoa.phrases (owned by
-// phrase.go) but never writes it. Work on this file + web/quiz.jsx without
-// touching the other sections.
+// phrase.go, topped up by ai.go) but never writes it. Work on this file +
+// web/quiz.jsx without touching the other sections.
 //
 // Each user gets a fixed set of dailyQuizSize questions generated once per
 // day (Seoul time) and stored — refreshing the page doesn't reshuffle them,
-// and each question is graded exactly once (recordQuizAnswer), so score is
-// naturally capped at dailyQuizSize*quizCorrectPoints per person per day.
+// and each question is graded exactly once (recordQuizAnswer). "Score" here
+// is just the count of correct answers (score.go) — wrong answers are never
+// subtracted, there's nothing to subtract from.
 //
 // The correct answer is never sent to the client before grading: multiple-
 // choice options carry real phrase ids (fine, since nothing else in the
@@ -42,6 +43,7 @@ var quizSchemaStmts = []string{
 		quiz_date      DATE NOT NULL,
 		seq            SMALLINT NOT NULL,
 		phrase_id      INT NOT NULL REFERENCES english_zoa.phrases(id) ON DELETE CASCADE,
+		category       TEXT NOT NULL DEFAULT 'expression',
 		question_type  TEXT NOT NULL CHECK (question_type IN ('multiple_choice', 'word_order')),
 		prompt         TEXT NOT NULL,
 		options        JSONB NOT NULL,
@@ -50,6 +52,7 @@ var quizSchemaStmts = []string{
 		answered_at    TIMESTAMPTZ,
 		UNIQUE (email, quiz_date, seq)
 	)`,
+	`ALTER TABLE english_zoa.quiz_questions ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'expression'`,
 }
 
 const (
@@ -73,6 +76,7 @@ type quizAnswerKey struct {
 type DailyQuizQuestion struct {
 	ID           int          `json:"id"`
 	Seq          int          `json:"seq"`
+	Category     string       `json:"category"`
 	QuestionType string       `json:"question_type"`
 	Prompt       string       `json:"prompt"`
 	Options      []QuizOption `json:"options"`
@@ -105,14 +109,7 @@ func buildWordOrderChips(english string) ([]QuizOption, []string) {
 	return options, correctOrder
 }
 
-func buildMultipleChoiceQuestion(ctx context.Context, phraseID int) (prompt string, options []QuizOption, answer quizAnswerKey, err error) {
-	var english, korean string
-	if err = db.QueryRow(ctx, `
-		SELECT english_text, korean_text FROM english_zoa.phrases WHERE id = $1
-	`, phraseID).Scan(&english, &korean); err != nil {
-		return "", nil, quizAnswerKey{}, err
-	}
-
+func buildMultipleChoiceQuestion(ctx context.Context, phraseID int, english, korean string) (prompt string, options []QuizOption, answer quizAnswerKey, err error) {
 	rows, err := db.Query(ctx, `
 		SELECT id, korean_text FROM english_zoa.phrases WHERE id != $1 ORDER BY random() LIMIT 3
 	`, phraseID)
@@ -139,29 +136,29 @@ func buildMultipleChoiceQuestion(ctx context.Context, phraseID int) (prompt stri
 	return english, options, quizAnswerKey{CorrectID: correctID}, nil
 }
 
-func buildWordOrderQuestion(ctx context.Context, phraseID int) (prompt string, options []QuizOption, answer quizAnswerKey, err error) {
-	var english, korean string
-	if err = db.QueryRow(ctx, `
-		SELECT english_text, korean_text FROM english_zoa.phrases WHERE id = $1
-	`, phraseID).Scan(&english, &korean); err != nil {
-		return "", nil, quizAnswerKey{}, err
-	}
+func buildWordOrderQuestion(english, korean string) (prompt string, options []QuizOption, answer quizAnswerKey) {
 	options, order := buildWordOrderChips(english)
-	return korean, options, quizAnswerKey{Order: order}, nil
+	return korean, options, quizAnswerKey{Order: order}
 }
 
-// chooseQuestionType picks a type for a slot. Multiple-choice needs 3
-// distractors from other phrases, so it's only offered once the pool is
-// big enough; below that, every slot is word-order (which only needs the
-// one phrase it's built from).
-func chooseQuestionType(totalPhrases int) string {
-	if totalPhrases < minPhrasesForMultipleChoice {
+// chooseQuestionType picks a type for one phrase. Word-order needs at least
+// two words to be a meaningful puzzle, so single-word vocabulary items are
+// always multiple-choice; multiple-choice needs 3 distractors from other
+// phrases, so it's only offered once the pool is big enough.
+func chooseQuestionType(category string, wordCount, totalPhrases int) string {
+	canWordOrder := category != "vocabulary" && wordCount >= 2
+	canMultipleChoice := totalPhrases >= minPhrasesForMultipleChoice
+	switch {
+	case canWordOrder && canMultipleChoice:
+		if rand.Intn(2) == 0 {
+			return "multiple_choice"
+		}
 		return "word_order"
-	}
-	if rand.Intn(2) == 0 {
+	case canWordOrder:
+		return "word_order"
+	default:
 		return "multiple_choice"
 	}
-	return "word_order"
 }
 
 // pickDailyPhraseIDs prefers phrases this user has never been quizzed on
@@ -214,7 +211,7 @@ func pickDailyPhraseIDs(ctx context.Context, email string, count int) ([]int, er
 
 func loadDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQuestion, error) {
 	rows, err := db.Query(ctx, `
-		SELECT id, seq, question_type, prompt, options, COALESCE(result, '')
+		SELECT id, seq, category, question_type, prompt, options, COALESCE(result, '')
 		FROM english_zoa.quiz_questions
 		WHERE email = $1 AND quiz_date = $2
 		ORDER BY seq
@@ -228,7 +225,7 @@ func loadDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQuest
 	for rows.Next() {
 		var q DailyQuizQuestion
 		var optionsRaw []byte
-		if err := rows.Scan(&q.ID, &q.Seq, &q.QuestionType, &q.Prompt, &optionsRaw, &q.Result); err != nil {
+		if err := rows.Scan(&q.ID, &q.Seq, &q.Category, &q.QuestionType, &q.Prompt, &optionsRaw, &q.Result); err != nil {
 			continue
 		}
 		if err := json.Unmarshal(optionsRaw, &q.Options); err != nil {
@@ -241,7 +238,7 @@ func loadDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQuest
 
 // ensureDailyQuiz returns today's 10 questions for this user, generating them
 // on first request of the day. Returns (nil, nil) when the phrase pool is
-// still empty (brand new deploy, Slack not wired up yet, first ever request).
+// still empty (brand new deploy, Slack/AI not wired up yet, first request).
 func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQuestion, error) {
 	existing, err := loadDailyQuiz(ctx, email, dateStr)
 	if err != nil {
@@ -265,20 +262,29 @@ func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQue
 	}
 
 	for seq, phraseID := range phraseIDs {
-		qtype := chooseQuestionType(total)
+		var category, english, korean string
+		if err := db.QueryRow(ctx, `
+			SELECT category, english_text, korean_text FROM english_zoa.phrases WHERE id = $1
+		`, phraseID).Scan(&category, &english, &korean); err != nil {
+			return nil, err
+		}
+		wordCount := len(strings.Fields(english))
+		qtype := chooseQuestionType(category, wordCount, total)
+
 		var (
 			prompt  string
 			options []QuizOption
 			answer  quizAnswerKey
 		)
 		if qtype == "multiple_choice" {
-			prompt, options, answer, err = buildMultipleChoiceQuestion(ctx, phraseID)
+			prompt, options, answer, err = buildMultipleChoiceQuestion(ctx, phraseID, english, korean)
+			if err != nil {
+				return nil, err
+			}
 		} else {
-			prompt, options, answer, err = buildWordOrderQuestion(ctx, phraseID)
+			prompt, options, answer = buildWordOrderQuestion(english, korean)
 		}
-		if err != nil {
-			return nil, err
-		}
+
 		optionsJSON, err := json.Marshal(options)
 		if err != nil {
 			return nil, err
@@ -289,10 +295,10 @@ func ensureDailyQuiz(ctx context.Context, email, dateStr string) ([]DailyQuizQue
 		}
 		if _, err := db.Exec(ctx, `
 			INSERT INTO english_zoa.quiz_questions
-				(email, quiz_date, seq, phrase_id, question_type, prompt, options, correct_answer)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+				(email, quiz_date, seq, phrase_id, category, question_type, prompt, options, correct_answer)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			ON CONFLICT (email, quiz_date, seq) DO NOTHING
-		`, email, dateStr, seq, phraseID, qtype, prompt, optionsJSON, answerJSON); err != nil {
+		`, email, dateStr, seq, phraseID, category, qtype, prompt, optionsJSON, answerJSON); err != nil {
 			return nil, err
 		}
 	}
@@ -313,14 +319,15 @@ func slicesEqual(a, b []string) bool {
 }
 
 // recordQuizAnswer grades a question exactly once — a question with a
-// stored result just returns that result again without touching score, so
-// retries (or a slow double-click) can't be replayed for more points. The
-// answer key is returned too (safe now — grading already happened) so the
-// frontend can reveal the correct choice/sentence either way.
-func recordQuizAnswer(ctx context.Context, email string, questionID int, selectedID string, orderedIDs []string) (correct bool, scoreDelta int, answer quizAnswerKey, err error) {
+// stored result just returns that result again without touching the count,
+// so retries (or a slow double-click) can't be replayed for more credit. A
+// wrong answer is simply recorded as "incorrect" and never reduces anything.
+// The answer key is returned too (safe now — grading already happened) so
+// the frontend can reveal the correct choice/sentence either way.
+func recordQuizAnswer(ctx context.Context, email string, questionID int, selectedID string, orderedIDs []string) (correct, alreadyAnswered bool, answer quizAnswerKey, err error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
-		return false, 0, quizAnswerKey{}, err
+		return false, false, quizAnswerKey{}, err
 	}
 	defer tx.Rollback(ctx)
 
@@ -334,14 +341,14 @@ func recordQuizAnswer(ctx context.Context, email string, questionID int, selecte
 		FOR UPDATE
 	`, questionID, email).Scan(&qtype, &answerRaw, &existingResult)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, 0, quizAnswerKey{}, fmt.Errorf("question not found")
+		return false, false, quizAnswerKey{}, fmt.Errorf("question not found")
 	}
 	if err != nil {
-		return false, 0, quizAnswerKey{}, err
+		return false, false, quizAnswerKey{}, err
 	}
 
 	if err := json.Unmarshal(answerRaw, &answer); err != nil {
-		return false, 0, quizAnswerKey{}, err
+		return false, false, quizAnswerKey{}, err
 	}
 
 	switch qtype {
@@ -352,7 +359,7 @@ func recordQuizAnswer(ctx context.Context, email string, questionID int, selecte
 	}
 
 	if existingResult != nil {
-		return *existingResult == "correct", 0, answer, tx.Commit(ctx)
+		return *existingResult == "correct", true, answer, tx.Commit(ctx)
 	}
 
 	result := "incorrect"
@@ -362,20 +369,13 @@ func recordQuizAnswer(ctx context.Context, email string, questionID int, selecte
 	if _, err := tx.Exec(ctx, `
 		UPDATE english_zoa.quiz_questions SET result = $2, answered_at = NOW() WHERE id = $1
 	`, questionID, result); err != nil {
-		return false, 0, quizAnswerKey{}, err
-	}
-
-	if correct {
-		if err := addScoreTx(ctx, tx, email, quizCorrectPoints); err != nil {
-			return false, 0, quizAnswerKey{}, err
-		}
-		scoreDelta = quizCorrectPoints
+		return false, false, quizAnswerKey{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return false, 0, quizAnswerKey{}, err
+		return false, false, quizAnswerKey{}, err
 	}
-	return correct, scoreDelta, answer, nil
+	return correct, false, answer, nil
 }
 
 func registerQuizRoutes(r *gin.Engine) {
@@ -390,11 +390,19 @@ func registerQuizRoutes(r *gin.Engine) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "quiz unavailable"})
 			return
 		}
-		// Feed today's phrase into the pool before building the day's quiz so
-		// there's always at least one fresh question source (see phrase.go).
+		// Feed the pool before building today's quiz: the full curated
+		// static list (phrase.go, one-time bulk seed), one Slack-sourced
+		// phrase for today if configured, and an AI top-up batch if the pool
+		// is running low (ai.go) — all best-effort, quiz generation proceeds
+		// either way.
+		if err := seedStaticPhrasesIfMissing(ctx); err != nil {
+			log.Printf("seedStaticPhrasesIfMissing: %v", err)
+		}
 		if _, err := ensureTodayPhrase(ctx); err != nil {
 			log.Printf("ensureTodayPhrase: %v", err)
 		}
+		topUpPhrasePoolIfLow(ctx)
+
 		dateStr := time.Now().In(seoulTZ).Format("2006-01-02")
 		qs, err := ensureDailyQuiz(ctx, email, dateStr)
 		if err != nil {
@@ -403,7 +411,7 @@ func registerQuizRoutes(r *gin.Engine) {
 			return
 		}
 		if qs == nil {
-			c.JSON(http.StatusOK, gin.H{"questions": []DailyQuizQuestion{}, "message": "아직 문구가 없어서 퀴즈를 만들 수 없어요"})
+			c.JSON(http.StatusOK, gin.H{"questions": []DailyQuizQuestion{}, "message": "No phrases yet — check back soon."})
 			return
 		}
 		answered, correct := 0, 0
@@ -438,17 +446,21 @@ func registerQuizRoutes(r *gin.Engine) {
 			return
 		}
 		ctx := c.Request.Context()
-		correct, scoreDelta, answer, err := recordQuizAnswer(ctx, email, body.QuestionID, body.SelectedID, body.OrderedIDs)
+		correct, alreadyAnswered, answer, err := recordQuizAnswer(ctx, email, body.QuestionID, body.SelectedID, body.OrderedIDs)
 		if err != nil {
 			log.Printf("recordQuizAnswer: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "answer failed"})
 			return
 		}
-		score, err := getScore(ctx, email)
+		totalCorrect, err := getQuizCorrectCount(ctx, email)
 		if err != nil {
-			log.Printf("getScore: %v", err)
+			log.Printf("getQuizCorrectCount: %v", err)
 		}
-		resp := gin.H{"correct": correct, "score_delta": scoreDelta, "score": score}
+		resp := gin.H{
+			"correct":       correct,
+			"newly_correct": correct && !alreadyAnswered,
+			"correct_count": totalCorrect,
+		}
 		if answer.CorrectID != "" {
 			resp["correct_id"] = answer.CorrectID
 		}

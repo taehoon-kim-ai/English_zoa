@@ -46,19 +46,13 @@ func defaultNickname(email string) string {
 	return local
 }
 
-// ensureUser creates the user + user_scores row on first sight. Idempotent —
-// call at the top of any handler that needs the user to already exist.
+// ensureUser creates the user row on first sight. Idempotent — call at the
+// top of any handler that needs the user to already exist.
 func ensureUser(ctx context.Context, email string) error {
-	if _, err := db.Exec(ctx, `
+	_, err := db.Exec(ctx, `
 		INSERT INTO english_zoa.users (email, nickname) VALUES ($1, $2)
 		ON CONFLICT (email) DO NOTHING
-	`, email, defaultNickname(email)); err != nil {
-		return err
-	}
-	_, err := db.Exec(ctx, `
-		INSERT INTO english_zoa.user_scores (email) VALUES ($1)
-		ON CONFLICT (email) DO NOTHING
-	`, email)
+	`, email, defaultNickname(email))
 	return err
 }
 
@@ -95,8 +89,9 @@ type LoginEvent struct {
 
 // recordLogin records today's first request as a login event (idempotent —
 // repeat calls the same day just return the existing streak) and extends the
-// streak from yesterday's row if present. Every streakBonusEvery-th
-// consecutive day awards a one-time bonus (score.go).
+// streak from yesterday's row if present. Streak carries no points of its
+// own — it's a separate leaderboard (score.go getStreakLeaderboard), not a
+// bonus added to quiz score.
 func recordLogin(ctx context.Context, email string, now time.Time) (int, error) {
 	seoulNow := now.In(seoulTZ)
 	today := seoulNow.Format("2006-01-02")
@@ -129,20 +124,6 @@ func recordLogin(ctx context.Context, email string, now time.Time) (int, error) 
 		VALUES ($1, $2, $3, $4)
 	`, email, today, seoulNow, streak); err != nil {
 		return 0, err
-	}
-
-	if streak%streakBonusEvery == 0 {
-		tx, err := db.Begin(ctx)
-		if err != nil {
-			return streak, err
-		}
-		defer tx.Rollback(ctx)
-		if err := addScoreTx(ctx, tx, email, streakBonusPoints); err != nil {
-			return streak, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return streak, err
-		}
 	}
 	return streak, nil
 }
@@ -198,16 +179,16 @@ func registerProfileRoutes(r *gin.Engine) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "profile unavailable"})
 			return
 		}
-		score, err := getScore(ctx, email)
+		correctCount, err := getQuizCorrectCount(ctx, email)
 		if err != nil {
-			log.Printf("getScore: %v", err)
+			log.Printf("getQuizCorrectCount: %v", err)
 		}
 		c.JSON(http.StatusOK, gin.H{
 			"email":          email,
 			"nickname":       profile.Nickname,
 			"status_message": profile.StatusMessage,
 			"streak":         streak,
-			"score":          score,
+			"correct_count":  correctCount,
 		})
 	})
 

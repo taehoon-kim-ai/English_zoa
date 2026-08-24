@@ -4,9 +4,26 @@ import "testing"
 
 func TestChooseQuestionTypeBelowThreshold(t *testing.T) {
 	for total := 0; total < minPhrasesForMultipleChoice; total++ {
-		if got := chooseQuestionType(total); got != "word_order" {
-			t.Errorf("chooseQuestionType(%d) = %q, want word_order (not enough phrases for distractors)", total, got)
+		if got := chooseQuestionType("expression", 5, total); got != "word_order" {
+			t.Errorf("chooseQuestionType(expression, 5, %d) = %q, want word_order (not enough phrases for distractors)", total, got)
 		}
+	}
+}
+
+func TestChooseQuestionTypeVocabularyIsAlwaysMultipleChoice(t *testing.T) {
+	// A single-word vocabulary item can't make a meaningful word-order puzzle.
+	for total := minPhrasesForMultipleChoice; total < minPhrasesForMultipleChoice+3; total++ {
+		if got := chooseQuestionType("vocabulary", 1, total); got != "multiple_choice" {
+			t.Errorf("chooseQuestionType(vocabulary, 1, %d) = %q, want multiple_choice", total, got)
+		}
+	}
+}
+
+func TestChooseQuestionTypeShortPoolFallsBackToWordOrder(t *testing.T) {
+	// Not enough phrases for distractors, but the expression has enough words
+	// to arrange — should still produce a playable question.
+	if got := chooseQuestionType("expression", 5, 1); got != "word_order" {
+		t.Errorf("chooseQuestionType(expression, 5, 1) = %q, want word_order", got)
 	}
 }
 

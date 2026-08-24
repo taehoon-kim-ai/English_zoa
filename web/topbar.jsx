@@ -1,9 +1,9 @@
-// ── section: 상단 네비게이션 — stateless, no hook aliasing needed ────────────
+// ── section: top nav — stateless, no hook aliasing needed ────────────────
 function TopBar({ route, me }) {
   const tabs = [
-    { key: 'quiz', label: '퀴즈', icon: '🧠' },
-    { key: 'profile', label: '내 페이지', icon: '🙋' },
-    { key: 'leaderboard', label: '리더보드', icon: '🏆' },
+    { key: 'quiz', label: 'Quiz', icon: '🧠' },
+    { key: 'profile', label: 'Profile', icon: '🙋' },
+    { key: 'leaderboard', label: 'Leaderboard', icon: '🏆' },
   ];
   return (
     <div className="topbar">
@@ -18,8 +18,8 @@ function TopBar({ route, me }) {
       <div className="topbar-stats">
         {me && (
           <>
-            <span className="stat-pill streak">🔥 {me.streak}</span>
-            <span className="stat-pill score">💎 {me.score}</span>
+            <span className="stat-pill streak" title="Current streak">🔥 {me.streak}</span>
+            <span className="stat-pill score" title="Correct answers">🎯 {me.correct_count}</span>
           </>
         )}
       </div>
