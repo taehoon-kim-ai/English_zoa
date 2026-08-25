@@ -112,6 +112,8 @@ func generateBusinessEnglishBatch(ctx context.Context, category string, count in
 	prompt := fmt.Sprintf(`Generate exactly %d NEW items for a workplace/business English learning app aimed at Korean professionals.
 
 Every item must be of this one kind — %s. Every item needs a natural, accurate Korean translation.
+The Korean translation must be a REAL Korean gloss, never a transliteration of the English word
+(e.g. "synergy" must be translated as 상승 효과, NOT 시너지 — a transliterated answer makes the quiz trivial).
 Prefer varied, less-common but genuinely useful real workplace situations: meetings, email, negotiation,
 project status, hiring, finance, sales, presentations, small talk with colleagues.%s
 
@@ -201,8 +203,8 @@ func ensureFreshContent(ctx context.Context, email, category string, need int) {
 			continue
 		}
 		tag, err := db.Exec(ctx, `
-			INSERT INTO phraseup.phrases (english_text, korean_text, category)
-			VALUES ($1, $2, $3)
+			INSERT INTO phraseup.phrases (english_text, korean_text, category, source)
+			VALUES ($1, $2, $3, 'ai')
 			ON CONFLICT (english_text) DO NOTHING
 		`, english, korean, category)
 		if err != nil {

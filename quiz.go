@@ -97,6 +97,16 @@ var (
 	phraseCounts = []int{5, 10, 15}
 )
 
+// sourceFilter returns the SQL source list for a quiz section: "core" is
+// the word bank (curated + AI + Slack), "media" is content extracted from
+// TED talks / the daily news article.
+func sourceGroupList(group string) []string {
+	if group == "media" {
+		return []string{"news", "ted"}
+	}
+	return []string{"curated", "ai", "slack"}
+}
+
 func trackCategory(track string) string {
 	if track == trackVocab {
 		return "vocabulary"
@@ -243,15 +253,15 @@ func chooseQuestionType(track string, wordCount, categoryTotal int) string {
 // has never been quizzed on before (across all past sessions); once that
 // runs out it pads with random repeats so a small pool still yields a full
 // session.
-func pickSessionPhraseIDs(ctx context.Context, email, category string, count int) ([]int, error) {
+func pickSessionPhraseIDs(ctx context.Context, email, category string, sources []string, count int) ([]int, error) {
 	rows, err := db.Query(ctx, `
 		SELECT p.id FROM phraseup.phrases p
-		WHERE p.category = $1 AND NOT EXISTS (
+		WHERE p.category = $1 AND p.source = ANY($4) AND NOT EXISTS (
 			SELECT 1 FROM phraseup.quiz_questions q WHERE q.email = $2 AND q.phrase_id = p.id
 		)
 		ORDER BY random()
 		LIMIT $3
-	`, category, email, count)
+	`, category, email, count, sources)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +283,7 @@ func pickSessionPhraseIDs(ctx context.Context, email, category string, count int
 	}
 
 	need := count - len(ids)
-	padRows, err := db.Query(ctx, `SELECT id FROM phraseup.phrases WHERE category = $1 ORDER BY random() LIMIT $2`, category, need)
+	padRows, err := db.Query(ctx, `SELECT id FROM phraseup.phrases WHERE category = $1 AND source = ANY($3) ORDER BY random() LIMIT $2`, category, need, sources)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +364,7 @@ func newSessionID() string {
 // and covers up to reviewSessionMax of the user's current mistakes (mixed
 // categories). Returns ("", nil, nil) — not an error — when there's no
 // content to build from (empty category pool, or no mistakes to review).
-func startQuizSession(ctx context.Context, email, track string, count int) (string, []DailyQuizQuestion, error) {
+func startQuizSession(ctx context.Context, email, track, sourceGroup string, count int) (string, []DailyQuizQuestion, error) {
 	var phraseIDs []int
 	var err error
 
@@ -362,14 +372,15 @@ func startQuizSession(ctx context.Context, email, track string, count int) (stri
 		phraseIDs, err = pickMistakePhraseIDs(ctx, email, reviewSessionMax)
 	} else {
 		category := trackCategory(track)
+		sources := sourceGroupList(sourceGroup)
 		var categoryTotal int
-		if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases WHERE category = $1`, category).Scan(&categoryTotal); err != nil {
+		if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases WHERE category = $1 AND source = ANY($2)`, category, sources).Scan(&categoryTotal); err != nil {
 			return "", nil, err
 		}
 		if categoryTotal == 0 {
 			return "", nil, nil
 		}
-		phraseIDs, err = pickSessionPhraseIDs(ctx, email, category, count)
+		phraseIDs, err = pickSessionPhraseIDs(ctx, email, category, sources, count)
 	}
 	if err != nil {
 		return "", nil, err
@@ -741,12 +752,16 @@ func registerQuizRoutes(r *gin.Engine) {
 			return
 		}
 		var body struct {
-			Track string `json:"track"`
-			Count int    `json:"count"`
+			Track  string `json:"track"`
+			Count  int    `json:"count"`
+			Source string `json:"source"` // "core" (default) | "media"
 		}
 		if err := c.ShouldBindJSON(&body); err != nil || !validTrackCount(body.Track, body.Count) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid track/count"})
 			return
+		}
+		if body.Source != "media" {
+			body.Source = "core"
 		}
 		ctx := c.Request.Context()
 		if err := ensureUser(ctx, email); err != nil {
@@ -765,11 +780,13 @@ func registerQuizRoutes(r *gin.Engine) {
 		if _, err := ensureTodayPhrase(ctx); err != nil {
 			log.Printf("ensureTodayPhrase: %v", err)
 		}
-		if body.Track != trackReview {
+		if body.Track != trackReview && body.Source == "core" {
+			// Media content only grows from real TED/news material — no AI
+			// filler there, so top-ups apply to the word bank only.
 			ensureFreshContent(ctx, email, trackCategory(body.Track), body.Count)
 		}
 
-		sessionID, qs, err := startQuizSession(ctx, email, body.Track, body.Count)
+		sessionID, qs, err := startQuizSession(ctx, email, body.Track, body.Source, body.Count)
 		if err != nil {
 			log.Printf("startQuizSession: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "quiz unavailable"})
@@ -779,6 +796,8 @@ func registerQuizRoutes(r *gin.Engine) {
 			msg := "No content for this track yet — check back soon."
 			if body.Track == trackReview {
 				msg = "No mistakes to review — everything you've missed has been re-answered correctly. 🎉"
+			} else if body.Source == "media" {
+				msg = "No media content yet — words are collected from each day's news article, so this section grows daily."
 			}
 			c.JSON(http.StatusOK, gin.H{"session_id": "", "questions": []DailyQuizQuestion{}, "message": msg})
 			return

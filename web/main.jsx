@@ -43,9 +43,14 @@ function DateStrip({ date, todayStr, onChange }) {
       <div className="strip-window">
         <div key={date} className={`strip-track slide-${direction}`}>
           {strip.map((d) => (
-            <div key={d} className={`strip-chip ${d === date ? 'active' : ''} ${d > todayStr ? 'future' : ''}`}>
+            <button
+              key={d}
+              className={`strip-chip ${d === date ? 'active' : ''} ${d > todayStr ? 'future' : ''}`}
+              onClick={() => { if (d <= todayStr && d !== date) { setDirection(d < date ? 'right' : 'left'); onChange(d); } }}
+              disabled={d > todayStr}
+            >
               {d.slice(5)}
-            </div>
+            </button>
           ))}
         </div>
       </div>

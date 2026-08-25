@@ -172,12 +172,17 @@ business English. Cover the key facts, the numbers involved, the background/cont
 it matters. Separate paragraphs with \n\n. Then write the same summary in natural Korean,
 matching the paragraph structure.
 
+Also pick 4-6 useful business-English items FROM THE ARTICLE for learners: a mix of
+"vocabulary" (single terms/collocations) and "expression" (useful full sentences or sentence
+patterns, adapted to be generally reusable). Each needs a natural Korean translation — a real
+Korean gloss, never a transliteration of the English word.
+
 Respond with ONLY a JSON object, no prose, no markdown fences, in exactly this shape:
-{"summary_en": "...", "summary_ko": "..."}`, title, material)
+{"summary_en": "...", "summary_ko": "...", "vocab": [{"english": "...", "korean": "...", "category": "vocabulary"}]}`, title, material)
 
 	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     "claude-haiku-4-5",
-		MaxTokens: 3000,
+		MaxTokens: 3800,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
 		},
@@ -199,13 +204,41 @@ Respond with ONLY a JSON object, no prose, no markdown fences, in exactly this s
 		return description, ""
 	}
 	var out struct {
-		SummaryEN string `json:"summary_en"`
-		SummaryKO string `json:"summary_ko"`
+		SummaryEN string            `json:"summary_en"`
+		SummaryKO string            `json:"summary_ko"`
+		Vocab     []generatedPhrase `json:"vocab"`
 	}
 	if err := json.Unmarshal([]byte(match), &out); err != nil || strings.TrimSpace(out.SummaryEN) == "" {
 		log.Printf("news: summarize: parse failed: %v", err)
 		return description, ""
 	}
+
+	// Feed the extracted items into the phrase pool as Media-section content
+	// (quiz Section 2). Best-effort; dupes are dropped by the unique index.
+	inserted := 0
+	for _, item := range out.Vocab {
+		english := strings.TrimSpace(item.English)
+		korean := strings.TrimSpace(item.Korean)
+		if english == "" || korean == "" {
+			continue
+		}
+		category := item.Category
+		if category != "vocabulary" && category != "expression" {
+			category = "expression"
+		}
+		tag, err := db.Exec(ctx, `
+			INSERT INTO phraseup.phrases (english_text, korean_text, category, source)
+			VALUES ($1, $2, $3, 'news')
+			ON CONFLICT (english_text) DO NOTHING
+		`, english, korean, category)
+		if err == nil {
+			inserted += int(tag.RowsAffected())
+		}
+	}
+	if inserted > 0 {
+		log.Printf("news: extracted %d media phrases from today's article", inserted)
+	}
+
 	return strings.TrimSpace(out.SummaryEN), strings.TrimSpace(out.SummaryKO)
 }
 

@@ -43,25 +43,43 @@ const TRACKS = [
   { key: 'phrase', title: 'Phrase Quiz', icon: '💬', desc: 'Full workplace sentences', counts: [5, 10, 15] },
 ];
 
-const REVIEW_TRACK = { key: 'review', title: 'Mistake Review', icon: '🔁', desc: 'Retry what you got wrong', counts: [] };
+const REVIEW_TRACK = { key: 'review', title: 'Mistake Review', icon: '🔁', desc: 'Retry what you got wrong', counts: [], source: 'core' };
+const BATTLE_TRACK = { key: 'battle', title: 'Word Battle', icon: '⚔️', desc: 'Live 1v1 — first to type it wins', counts: [] };
 
-function TrackSelect({ onPick }) {
-  return (
-    <div className="quiz-wrap">
-      <div className="tagline">Business English · Choose a Quiz</div>
+function TrackSelect({ onPick, onBattle }) {
+  const section = (label, source) => (
+    <div className="track-section">
+      <div className="track-section-label">{label}</div>
       <div className="track-grid">
         {TRACKS.map((t) => (
-          <button key={t.key} className="track-card" onClick={() => onPick(t)}>
+          <button key={source + t.key} className="track-card" onClick={() => onPick({ ...t, source })}>
             <div className="track-card-icon">{t.icon}</div>
             <div className="track-card-title">{t.title}</div>
             <div className="track-card-desc">{t.desc}</div>
           </button>
         ))}
-        <button className="track-card review" onClick={() => onPick(REVIEW_TRACK)}>
-          <div className="track-card-icon">{REVIEW_TRACK.icon}</div>
-          <div className="track-card-title">{REVIEW_TRACK.title}</div>
-          <div className="track-card-desc">{REVIEW_TRACK.desc}</div>
-        </button>
+      </div>
+    </div>
+  );
+  return (
+    <div className="quiz-wrap">
+      <div className="tagline">Business English · Choose a Quiz</div>
+      {section('Section 1 · Word Bank (Slack + curated + AI)', 'core')}
+      {section('Section 2 · From TED Talks & Daily News', 'media')}
+      <div className="track-section">
+        <div className="track-section-label">Extras</div>
+        <div className="track-grid">
+          <button className="track-card review" onClick={() => onPick(REVIEW_TRACK)}>
+            <div className="track-card-icon">{REVIEW_TRACK.icon}</div>
+            <div className="track-card-title">{REVIEW_TRACK.title}</div>
+            <div className="track-card-desc">{REVIEW_TRACK.desc}</div>
+          </button>
+          <button className="track-card battle" onClick={onBattle}>
+            <div className="track-card-icon">{BATTLE_TRACK.icon}</div>
+            <div className="track-card-title">{BATTLE_TRACK.title}</div>
+            <div className="track-card-desc">{BATTLE_TRACK.desc}</div>
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -143,7 +161,7 @@ function QuizSession({ track, count, onCorrectCountChange, showToast, onRestart,
   const [currentId, setCurrentId] = useStateQuiz(undefined);
 
   useEffectQuiz(() => {
-    api('/api/quiz/start', { method: 'POST', body: { track: track.key, count } })
+    api('/api/quiz/start', { method: 'POST', body: { track: track.key, count, source: track.source || 'core' } })
       .then(setState)
       .catch((e) => setError(e.message));
   }, [track, count]);
@@ -399,6 +417,171 @@ function QuizReview({ session, onBack }) {
   );
 }
 
+// Live 1v1 word battle (battle.go). State machine driven by 1s polling of
+// /api/battle/:id/state: lobby -> waiting (host) / joined -> countdown ->
+// live typing race -> finished.
+function BattleView({ onBack, showToast }) {
+  const [battleId, setBattleId] = useStateQuiz(null);
+  const [lobby, setLobby] = useStateQuiz(null);
+  const [state, setState] = useStateQuiz(null);
+  const [answer, setAnswer] = useStateQuiz('');
+  const [flash, setFlash] = useStateQuiz('');
+  const pollRef = React.useRef(null);
+
+  const loadLobby = useCallbackQuiz(() => {
+    api('/api/battle/lobby').then((d) => {
+      setLobby(d.battles || []);
+      if (d.active_battle_id) setBattleId(d.active_battle_id);
+    }).catch(() => setLobby([]));
+  }, []);
+
+  // Poll: lobby refresh while browsing, battle state while in one.
+  useEffectQuiz(() => {
+    loadLobby();
+    pollRef.current = setInterval(() => {
+      if (battleId) {
+        api(`/api/battle/${battleId}/state`).then(setState).catch(() => {});
+      } else {
+        loadLobby();
+      }
+    }, 1000);
+    return () => clearInterval(pollRef.current);
+  }, [battleId, loadLobby]);
+
+  const create = async () => {
+    try {
+      const d = await api('/api/battle/create', { method: 'POST', body: {} });
+      setBattleId(d.battle_id);
+    } catch (e) { showToast(e.message); }
+  };
+
+  const join = async (id) => {
+    try {
+      await api('/api/battle/join', { method: 'POST', body: { battle_id: id } });
+      setBattleId(id);
+    } catch (e) { showToast(e.message); loadLobby(); }
+  };
+
+  const submit = async () => {
+    const text = answer.trim();
+    if (!text) return;
+    try {
+      const d = await api('/api/battle/answer', { method: 'POST', body: { battle_id: battleId, text } });
+      if (!d.correct) {
+        setFlash('❌ Not it — keep trying!');
+        setAnswer('');
+        setTimeout(() => setFlash(''), 900);
+      }
+    } catch (e) { showToast(e.message); }
+  };
+
+  const leave = async () => {
+    await api('/api/battle/cancel', { method: 'POST', body: {} }).catch(() => {});
+    setBattleId(null);
+    setState(null);
+    setAnswer('');
+    loadLobby();
+  };
+
+  // ── in a battle ──
+  if (battleId && state) {
+    if (state.status === 'waiting') {
+      return (
+        <div className="quiz-wrap">
+          <div className="tagline">⚔️ Word Battle</div>
+          <div className="card battle-card">
+            <div className="battle-waiting-spin">⏳</div>
+            <div className="battle-title">Waiting for an opponent...</div>
+            <div className="battle-sub">Anyone on the team can join from the battle lobby</div>
+            <button className="duo-btn outline" onClick={leave}>Cancel</button>
+          </div>
+        </div>
+      );
+    }
+    if (state.status === 'active') {
+      const counting = state.reveal_in_ms > 0;
+      return (
+        <div className="quiz-wrap">
+          <div className="tagline">⚔️ {state.host_name} vs {state.guest_name}</div>
+          <div className="card battle-card">
+            {counting ? (
+              <>
+                <div className="battle-countdown">{Math.ceil(state.reveal_in_ms / 1000)}</div>
+                <div className="battle-sub">Get ready — type the English word for the meaning shown!</div>
+              </>
+            ) : (
+              <>
+                <div className="battle-korean">{state.korean_prompt}</div>
+                <input
+                  className="battle-input"
+                  value={answer}
+                  onChange={(e) => setAnswer(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+                  placeholder="Type the English word + Enter"
+                  autoFocus
+                />
+                {flash && <div className="battle-flash">{flash}</div>}
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+    if (state.status === 'finished') {
+      return (
+        <div className="quiz-wrap">
+          {state.winner_is_me && <ConfettiBurst />}
+          <div className="tagline">⚔️ Word Battle</div>
+          <div className="card battle-card">
+            <div className="quiz-complete-emoji">{state.winner_is_me ? '🏆' : '💀'}</div>
+            <div className="battle-title">
+              {state.winner_is_me ? 'You won!' : `${state.winner_name} wins!`}
+            </div>
+            <div className="battle-sub">{state.korean_prompt} → <b>{state.english_answer}</b></div>
+            <div className="quiz-complete-actions">
+              <button className="duo-btn" onClick={() => { setBattleId(null); setState(null); setAnswer(''); create(); }}>Rematch</button>
+              <button className="duo-btn outline" onClick={leave}>Back to Lobby</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    // cancelled or unknown
+    return (
+      <div className="quiz-wrap">
+        <div className="state-msg">Battle ended.</div>
+        <button className="duo-btn outline" onClick={leave}>Back to Lobby</button>
+      </div>
+    );
+  }
+
+  // ── lobby ──
+  return (
+    <div className="quiz-wrap">
+      <div className="tagline">⚔️ Word Battle Lobby</div>
+      <div className="card battle-card">
+        <div className="battle-sub">One Korean meaning, two players — first to type the English word wins.</div>
+        <button className="duo-btn" onClick={create}>Open a Battle</button>
+      </div>
+      {lobby && lobby.length > 0 && (
+        <div className="card" style={{ width: '100%' }}>
+          <div className="mini-lb-title">Open battles</div>
+          {lobby.map((b) => (
+            <div key={b.id} className="battle-lobby-row">
+              <span className="battle-lobby-host">{b.host_name}</span>
+              <span className="battle-lobby-time">{b.created_at}</span>
+              {b.is_mine
+                ? <span className="battle-lobby-mine">yours</span>
+                : <button className="duo-btn blue small" onClick={() => join(b.id)}>Join</button>}
+            </div>
+          ))}
+        </div>
+      )}
+      <button className="duo-btn outline" onClick={onBack}>‹ Back</button>
+    </div>
+  );
+}
+
 function QuizView({ me, onCorrectCountChange, showToast }) {
   const [stage, setStage] = useStateQuiz('track'); // 'track' | 'count' | 'quiz' | 'review'
   const [track, setTrack] = useStateQuiz(null);
@@ -421,7 +604,8 @@ function QuizView({ me, onCorrectCountChange, showToast }) {
   const openReview = (s) => { setReviewSession(s); setStage('review'); };
 
   let content;
-  if (stage === 'track') content = <TrackSelect onPick={pickTrack} />;
+  if (stage === 'track') content = <TrackSelect onPick={pickTrack} onBattle={() => setStage('battle')} />;
+  else if (stage === 'battle') content = <BattleView onBack={restart} showToast={showToast} />;
   else if (stage === 'count') content = <CountSelect track={track} onPick={pickCount} onBack={() => setStage('track')} />;
   else if (stage === 'review') content = <QuizReview session={reviewSession} onBack={restart} />;
   else content = (

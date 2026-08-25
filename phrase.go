@@ -37,6 +37,15 @@ var phraseSchemaStmts = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS phrases_phrase_date_unique ON phraseup.phrases (phrase_date) WHERE phrase_date IS NOT NULL`,
 	`ALTER TABLE phraseup.phrases ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'expression'`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS phrases_english_text_unique ON phraseup.phrases (english_text)`,
+	// Content source, for the quiz's two source sections: 'curated'/'ai'/
+	// 'slack' feed Section 1 (Word Bank), 'news'/'ted' feed Section 2 (Media).
+	`ALTER TABLE phraseup.phrases ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'curated'`,
+	// One-time gloss fixes: Korean answers that were just transliterations
+	// of the English word made those questions trivially guessable.
+	`UPDATE phraseup.phrases SET korean_text = '상승 효과' WHERE english_text = 'synergy' AND korean_text LIKE '%시너지%'`,
+	`UPDATE phraseup.phrases SET korean_text = '(비교) 기준점, 성능 지표' WHERE english_text = 'benchmark' AND korean_text LIKE '%벤치마크%'`,
+	`UPDATE phraseup.phrases SET korean_text = '(제품·사업) 추진 계획' WHERE english_text = 'roadmap' AND korean_text LIKE '%로드맵%'`,
+	`UPDATE phraseup.phrases SET korean_text = '신규 인력 적응 지원 과정' WHERE english_text = 'onboarding' AND korean_text LIKE '%온보딩%'`,
 	// card_attempts belonged to the removed flashcard screen — drop it if a
 	// prior deploy created it.
 	`DROP TABLE IF EXISTS phraseup.card_attempts`,
@@ -102,8 +111,8 @@ func ensureTodayPhrase(ctx context.Context) (Phrase, error) {
 	// Upsert-select: a no-op UPDATE on conflict lets RETURNING work even when
 	// a concurrent request already inserted today's row first.
 	err = db.QueryRow(ctx, `
-		INSERT INTO phraseup.phrases (english_text, korean_text, category, phrase_date, source_slack_ts)
-		VALUES ($1, $2, 'expression', $3, $4)
+		INSERT INTO phraseup.phrases (english_text, korean_text, category, phrase_date, source_slack_ts, source)
+		VALUES ($1, $2, 'expression', $3, $4, 'slack')
 		ON CONFLICT (phrase_date) WHERE phrase_date IS NOT NULL DO UPDATE SET phrase_date = EXCLUDED.phrase_date
 		RETURNING id, english_text, korean_text, category, phrase_date
 	`, english, korean, dateStr, slackTS).Scan(&p.ID, &p.EnglishText, &p.KoreanText, &p.Category, &d)
@@ -157,20 +166,20 @@ var fallbackPhrases = []struct{ En, Ko, Category string }{
 	{"stakeholder", "이해관계자", "vocabulary"},
 	{"bandwidth", "(업무를 처리할) 여유, 여력", "vocabulary"},
 	{"deliverable", "산출물, 결과물", "vocabulary"},
-	{"onboarding", "온보딩, 신규 적응 교육", "vocabulary"},
+	{"onboarding", "신규 인력 적응 지원 과정", "vocabulary"},
 	{"headcount", "인원 수, 정원", "vocabulary"},
 	{"runway", "(자금) 여유 기간", "vocabulary"},
 	{"churn", "이탈(률)", "vocabulary"},
 	{"turnaround time", "처리 소요 시간", "vocabulary"},
 	{"escalate", "상부에 보고하다, 확대하다", "vocabulary"},
 	{"leverage", "활용하다", "vocabulary"},
-	{"synergy", "시너지", "vocabulary"},
-	{"benchmark", "기준, 벤치마크", "vocabulary"},
+	{"synergy", "상승 효과", "vocabulary"},
+	{"benchmark", "(비교) 기준점, 성능 지표", "vocabulary"},
 	{"procurement", "조달, 구매", "vocabulary"},
 	{"compliance", "규정 준수", "vocabulary"},
 	{"quarterly review", "분기 평가", "vocabulary"},
 	{"KPI", "핵심성과지표", "vocabulary"},
-	{"roadmap", "로드맵, 계획", "vocabulary"},
+	{"roadmap", "(제품·사업) 추진 계획", "vocabulary"},
 	{"budget overrun", "예산 초과", "vocabulary"},
 	{"attrition", "인력 이탈, 자연 감소", "vocabulary"},
 }
