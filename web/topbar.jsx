@@ -9,7 +9,7 @@ function TopBar({ route, me }) {
   const initial = me && me.nickname ? me.nickname.trim().charAt(0).toUpperCase() : '?';
   return (
     <div className="topbar">
-      <div className="topbar-brand">Phrase<span>Up</span></div>
+      <a href="#main" className="topbar-brand">Phrase<span>Up</span></a>
       <nav className="topbar-nav">
         {tabs.map((t) => (
           <a key={t.key} href={`#${t.key}`} className={route === t.key ? 'active' : ''}>

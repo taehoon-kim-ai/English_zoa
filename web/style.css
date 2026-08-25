@@ -78,7 +78,7 @@ button { font-family: var(--font); cursor: pointer; }
   gap: 12px;
   flex-wrap: wrap;
 }
-.topbar-brand { font-weight: 900; font-size: 20px; letter-spacing: -0.02em; white-space: nowrap; }
+.topbar-brand { font-weight: 900; font-size: 20px; letter-spacing: -0.02em; white-space: nowrap; text-decoration: none; color: inherit; }
 .topbar-brand span { color: var(--green); }
 .topbar-nav { display: flex; gap: 4px; flex-wrap: wrap; }
 .topbar-nav a {

@@ -1,23 +1,22 @@
 // ── section: translator — 3rd main tab. Pairs with translate.go. Split-pane
 // layout: type on the left, translation + Business Version on the right.
-// Translation fires only on an explicit action (Enter or the button), never
-// automatically while typing — every uncached translate is a real AI call,
-// so no request per keystroke/pause. Shift+Enter inserts a newline. Repeat
-// inputs are served from a server-side cache (shown with a ⚡ badge).
-const { useState: useStateTranslate, useRef: useRefTranslate } = React;
+// Auto-translates 800ms after the user stops typing (debounced). Shift+Enter
+// inserts a newline. Repeat inputs are served from server-side cache (⚡ badge).
+const { useState: useStateTranslate, useRef: useRefTranslate, useEffect: useEffectTranslate } = React;
 
 function TranslateView() {
   const [text, setText] = useStateTranslate('');
   const [result, setResult] = useStateTranslate(null);
   const [error, setError] = useStateTranslate('');
   const [loading, setLoading] = useStateTranslate(false);
-  // Serial number for in-flight requests — a slow older response must never
-  // overwrite the result of a newer request fired after it.
   const requestSeq = useRefTranslate(0);
+  const debounceTimer = useRefTranslate(null);
+  const lastTranslated = useRefTranslate('');
 
-  const translate = async () => {
-    const trimmed = text.trim();
-    if (!trimmed || loading) return;
+  const translate = async (input) => {
+    const trimmed = (input !== undefined ? input : text).trim();
+    if (!trimmed || trimmed === lastTranslated.current) return;
+    lastTranslated.current = trimmed;
     setLoading(true);
     setError('');
     const seq = ++requestSeq.current;
@@ -34,9 +33,19 @@ function TranslateView() {
     }
   };
 
+  const onTextChange = (e) => {
+    const val = e.target.value;
+    setText(val);
+    clearTimeout(debounceTimer.current);
+    if (val.trim() && val.trim() !== lastTranslated.current) {
+      debounceTimer.current = setTimeout(() => translate(val), 800);
+    }
+  };
+
   const onKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      clearTimeout(debounceTimer.current);
       translate();
     }
   };
@@ -51,11 +60,11 @@ function TranslateView() {
           <textarea
             className="translate-input tall"
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={onTextChange}
             onKeyDown={onKeyDown}
-            placeholder="Type and press Enter... e.g. 이거 언제까지 끝낼 수 있어요? (Shift+Enter for a new line)"
+            placeholder="Type and it auto-translates... e.g. 이거 언제까지 끝낼 수 있어요? (Shift+Enter for a new line)"
           />
-          <button className="duo-btn blue" onClick={translate} disabled={loading || !text.trim()}>
+          <button className="duo-btn blue" onClick={() => { clearTimeout(debounceTimer.current); translate(); }} disabled={loading || !text.trim()}>
             {loading ? 'Translating...' : 'Translate ⏎'}
           </button>
         </div>
