@@ -4,7 +4,7 @@ import "testing"
 
 func TestChooseQuestionTypeBelowThreshold(t *testing.T) {
 	for total := 0; total < minPhrasesForMultipleChoice; total++ {
-		if got := chooseQuestionType(trackPhrase, 5, total); got != "word_order" {
+		if got := chooseQuestionType(trackPhrase, "medium", 5, total); got != "word_order" {
 			t.Errorf("chooseQuestionType(phrase, 5, %d) = %q, want word_order (not enough phrases for distractors)", total, got)
 		}
 	}
@@ -14,7 +14,7 @@ func TestChooseQuestionTypeVocabTrackIsAlwaysMultipleChoice(t *testing.T) {
 	// The vocab track only ever holds single words/terms — no meaningful
 	// word-order puzzle regardless of word count or pool size.
 	for total := 0; total < minPhrasesForMultipleChoice+3; total++ {
-		if got := chooseQuestionType(trackVocab, 1, total); got != "multiple_choice" {
+		if got := chooseQuestionType(trackVocab, "medium", 1, total); got != "multiple_choice" {
 			t.Errorf("chooseQuestionType(vocab, 1, %d) = %q, want multiple_choice", total, got)
 		}
 	}
@@ -23,7 +23,7 @@ func TestChooseQuestionTypeVocabTrackIsAlwaysMultipleChoice(t *testing.T) {
 func TestChooseQuestionTypeShortPoolFallsBackToWordOrder(t *testing.T) {
 	// Not enough phrases for distractors, but the expression has enough words
 	// to arrange — should still produce a playable question.
-	if got := chooseQuestionType(trackPhrase, 5, 1); got != "word_order" {
+	if got := chooseQuestionType(trackPhrase, "medium", 5, 1); got != "word_order" {
 		t.Errorf("chooseQuestionType(phrase, 5, 1) = %q, want word_order", got)
 	}
 }
@@ -162,4 +162,26 @@ func joinWords(words []string) string {
 		out += w
 	}
 	return out
+}
+
+func TestChooseQuestionTypeDifficulty(t *testing.T) {
+	// Easy phrase questions are always multiple-choice when the pool allows;
+	// hard ones are always word-order when the sentence has enough words.
+	if got := chooseQuestionType(trackPhrase, "easy", 6, 20); got != "multiple_choice" {
+		t.Errorf("easy phrase = %q, want multiple_choice", got)
+	}
+	if got := chooseQuestionType(trackPhrase, "hard", 6, 20); got != "word_order" {
+		t.Errorf("hard phrase = %q, want word_order", got)
+	}
+	// Vocab stays multiple-choice at every difficulty.
+	if got := chooseQuestionType(trackVocab, "hard", 1, 20); got != "multiple_choice" {
+		t.Errorf("hard vocab = %q, want multiple_choice", got)
+	}
+}
+
+func TestDifficultyOptionCount(t *testing.T) {
+	if difficultyOptionCount("easy") != 3 || difficultyOptionCount("medium") != 4 || difficultyOptionCount("hard") != 6 {
+		t.Errorf("unexpected option counts: %d/%d/%d",
+			difficultyOptionCount("easy"), difficultyOptionCount("medium"), difficultyOptionCount("hard"))
+	}
 }

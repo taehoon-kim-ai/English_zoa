@@ -641,3 +641,54 @@ h1, h2, h3 { letter-spacing: -0.015em; }
 .strip-chip { cursor: pointer; transition: border-color 0.12s ease, transform 0.12s ease; }
 .strip-chip:hover:not(.active):not(:disabled) { border-color: var(--green); }
 .strip-chip:disabled { cursor: default; }
+
+/* ── difficulty picker ─────────────────────────────────────────────────── */
+.difficulty-row { display: flex; gap: 8px; }
+.difficulty-chip {
+  padding: 10px 22px;
+  border-radius: 999px;
+  border: 2px solid var(--border);
+  background: var(--surface);
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.difficulty-chip.active { background: var(--text); border-color: var(--text); color: #ffffff; }
+
+/* ── word tetris ───────────────────────────────────────────────────────── */
+.tetris-wrap { display: flex; gap: 20px; align-items: flex-start; justify-content: center; flex-wrap: wrap; }
+.tetris-board {
+  position: relative;
+  display: flex; flex-direction: column;
+  border: 2px solid var(--text);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #14161a;
+  outline: none;
+}
+.tetris-row { display: flex; }
+.tetris-cell {
+  width: 26px; height: 26px;
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.tetris-gate {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  background: rgba(20, 22, 26, 0.92);
+  padding: 18px;
+  text-align: center;
+}
+.tetris-gate-title { color: #aab0bb; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; }
+.tetris-gate-korean { color: #ffffff; font-size: 20px; font-weight: 900; }
+.tetris-gate-options { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.tetris-gate-options .quiz-option { padding: 10px 12px; font-size: 13px; text-align: center; }
+.tetris-side { display: flex; flex-direction: column; gap: 10px; min-width: 180px; }
+.tetris-stat {
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 10px 14px; font-size: 13px; font-weight: 700; box-shadow: var(--shadow);
+}
+.tetris-help { font-size: 11px; font-weight: 700; color: var(--text-muted); line-height: 1.5; }
+.battle-games { width: 100%; }
+.battle-lastround { font-size: 13px; font-weight: 700; color: var(--text-muted); }

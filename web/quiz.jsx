@@ -85,13 +85,32 @@ function TrackSelect({ onPick, onBattle }) {
   );
 }
 
+const DIFFICULTIES = [
+  { key: 'easy', label: 'Easy', desc: '3 options · multiple choice only' },
+  { key: 'medium', label: 'Medium', desc: '4 options · mixed types' },
+  { key: 'hard', label: 'Hard', desc: '6 options · word-order phrases' },
+];
+
 function CountSelect({ track, onPick, onBack }) {
+  const [difficulty, setDifficulty] = useStateQuiz('medium');
   return (
     <div className="quiz-wrap">
       <div className="tagline">{track.icon} {track.title}</div>
+      <div className="difficulty-row">
+        {DIFFICULTIES.map((d) => (
+          <button
+            key={d.key}
+            className={`difficulty-chip ${difficulty === d.key ? 'active' : ''}`}
+            onClick={() => setDifficulty(d.key)}
+            title={d.desc}
+          >
+            {d.label}
+          </button>
+        ))}
+      </div>
       <div className="count-grid">
         {track.counts.map((c) => (
-          <button key={c} className="duo-btn blue" onClick={() => onPick(c)}>{c} Questions</button>
+          <button key={c} className="duo-btn blue" onClick={() => onPick(c, difficulty)}>{c} Questions</button>
         ))}
       </div>
       <button className="duo-btn outline" onClick={onBack}>‹ Back</button>
@@ -153,7 +172,7 @@ function WordOrderQuestion({ q, constructed, answer, onTap, onRemove, onSubmit }
   );
 }
 
-function QuizSession({ track, count, onCorrectCountChange, showToast, onRestart, onReview }) {
+function QuizSession({ track, count, difficulty, onCorrectCountChange, showToast, onRestart, onReview }) {
   const [state, setState] = useStateQuiz(null);
   const [error, setError] = useStateQuiz('');
   const [answer, setAnswer] = useStateQuiz(null);
@@ -161,10 +180,10 @@ function QuizSession({ track, count, onCorrectCountChange, showToast, onRestart,
   const [currentId, setCurrentId] = useStateQuiz(undefined);
 
   useEffectQuiz(() => {
-    api('/api/quiz/start', { method: 'POST', body: { track: track.key, count, source: track.source || 'core' } })
+    api('/api/quiz/start', { method: 'POST', body: { track: track.key, count, source: track.source || 'core', difficulty: difficulty || 'medium' } })
       .then(setState)
       .catch((e) => setError(e.message));
-  }, [track, count]);
+  }, [track, count, difficulty]);
 
   useEffectQuiz(() => {
     if (state && state.questions && currentId === undefined) {
@@ -417,175 +436,11 @@ function QuizReview({ session, onBack }) {
   );
 }
 
-// Live 1v1 word battle (battle.go). State machine driven by 1s polling of
-// /api/battle/:id/state: lobby -> waiting (host) / joined -> countdown ->
-// live typing race -> finished.
-function BattleView({ onBack, showToast }) {
-  const [battleId, setBattleId] = useStateQuiz(null);
-  const [lobby, setLobby] = useStateQuiz(null);
-  const [state, setState] = useStateQuiz(null);
-  const [answer, setAnswer] = useStateQuiz('');
-  const [flash, setFlash] = useStateQuiz('');
-  const pollRef = React.useRef(null);
-
-  const loadLobby = useCallbackQuiz(() => {
-    api('/api/battle/lobby').then((d) => {
-      setLobby(d.battles || []);
-      if (d.active_battle_id) setBattleId(d.active_battle_id);
-    }).catch(() => setLobby([]));
-  }, []);
-
-  // Poll: lobby refresh while browsing, battle state while in one.
-  useEffectQuiz(() => {
-    loadLobby();
-    pollRef.current = setInterval(() => {
-      if (battleId) {
-        api(`/api/battle/${battleId}/state`).then(setState).catch(() => {});
-      } else {
-        loadLobby();
-      }
-    }, 1000);
-    return () => clearInterval(pollRef.current);
-  }, [battleId, loadLobby]);
-
-  const create = async () => {
-    try {
-      const d = await api('/api/battle/create', { method: 'POST', body: {} });
-      setBattleId(d.battle_id);
-    } catch (e) { showToast(e.message); }
-  };
-
-  const join = async (id) => {
-    try {
-      await api('/api/battle/join', { method: 'POST', body: { battle_id: id } });
-      setBattleId(id);
-    } catch (e) { showToast(e.message); loadLobby(); }
-  };
-
-  const submit = async () => {
-    const text = answer.trim();
-    if (!text) return;
-    try {
-      const d = await api('/api/battle/answer', { method: 'POST', body: { battle_id: battleId, text } });
-      if (!d.correct) {
-        setFlash('❌ Not it — keep trying!');
-        setAnswer('');
-        setTimeout(() => setFlash(''), 900);
-      }
-    } catch (e) { showToast(e.message); }
-  };
-
-  const leave = async () => {
-    await api('/api/battle/cancel', { method: 'POST', body: {} }).catch(() => {});
-    setBattleId(null);
-    setState(null);
-    setAnswer('');
-    loadLobby();
-  };
-
-  // ── in a battle ──
-  if (battleId && state) {
-    if (state.status === 'waiting') {
-      return (
-        <div className="quiz-wrap">
-          <div className="tagline">⚔️ Word Battle</div>
-          <div className="card battle-card">
-            <div className="battle-waiting-spin">⏳</div>
-            <div className="battle-title">Waiting for an opponent...</div>
-            <div className="battle-sub">Anyone on the team can join from the battle lobby</div>
-            <button className="duo-btn outline" onClick={leave}>Cancel</button>
-          </div>
-        </div>
-      );
-    }
-    if (state.status === 'active') {
-      const counting = state.reveal_in_ms > 0;
-      return (
-        <div className="quiz-wrap">
-          <div className="tagline">⚔️ {state.host_name} vs {state.guest_name}</div>
-          <div className="card battle-card">
-            {counting ? (
-              <>
-                <div className="battle-countdown">{Math.ceil(state.reveal_in_ms / 1000)}</div>
-                <div className="battle-sub">Get ready — type the English word for the meaning shown!</div>
-              </>
-            ) : (
-              <>
-                <div className="battle-korean">{state.korean_prompt}</div>
-                <input
-                  className="battle-input"
-                  value={answer}
-                  onChange={(e) => setAnswer(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
-                  placeholder="Type the English word + Enter"
-                  autoFocus
-                />
-                {flash && <div className="battle-flash">{flash}</div>}
-              </>
-            )}
-          </div>
-        </div>
-      );
-    }
-    if (state.status === 'finished') {
-      return (
-        <div className="quiz-wrap">
-          {state.winner_is_me && <ConfettiBurst />}
-          <div className="tagline">⚔️ Word Battle</div>
-          <div className="card battle-card">
-            <div className="quiz-complete-emoji">{state.winner_is_me ? '🏆' : '💀'}</div>
-            <div className="battle-title">
-              {state.winner_is_me ? 'You won!' : `${state.winner_name} wins!`}
-            </div>
-            <div className="battle-sub">{state.korean_prompt} → <b>{state.english_answer}</b></div>
-            <div className="quiz-complete-actions">
-              <button className="duo-btn" onClick={() => { setBattleId(null); setState(null); setAnswer(''); create(); }}>Rematch</button>
-              <button className="duo-btn outline" onClick={leave}>Back to Lobby</button>
-            </div>
-          </div>
-        </div>
-      );
-    }
-    // cancelled or unknown
-    return (
-      <div className="quiz-wrap">
-        <div className="state-msg">Battle ended.</div>
-        <button className="duo-btn outline" onClick={leave}>Back to Lobby</button>
-      </div>
-    );
-  }
-
-  // ── lobby ──
-  return (
-    <div className="quiz-wrap">
-      <div className="tagline">⚔️ Word Battle Lobby</div>
-      <div className="card battle-card">
-        <div className="battle-sub">One Korean meaning, two players — first to type the English word wins.</div>
-        <button className="duo-btn" onClick={create}>Open a Battle</button>
-      </div>
-      {lobby && lobby.length > 0 && (
-        <div className="card" style={{ width: '100%' }}>
-          <div className="mini-lb-title">Open battles</div>
-          {lobby.map((b) => (
-            <div key={b.id} className="battle-lobby-row">
-              <span className="battle-lobby-host">{b.host_name}</span>
-              <span className="battle-lobby-time">{b.created_at}</span>
-              {b.is_mine
-                ? <span className="battle-lobby-mine">yours</span>
-                : <button className="duo-btn blue small" onClick={() => join(b.id)}>Join</button>}
-            </div>
-          ))}
-        </div>
-      )}
-      <button className="duo-btn outline" onClick={onBack}>‹ Back</button>
-    </div>
-  );
-}
-
 function QuizView({ me, onCorrectCountChange, showToast }) {
   const [stage, setStage] = useStateQuiz('track'); // 'track' | 'count' | 'quiz' | 'review'
   const [track, setTrack] = useStateQuiz(null);
   const [count, setCount] = useStateQuiz(null);
+  const [difficulty, setDifficulty] = useStateQuiz('medium');
   const [reviewSession, setReviewSession] = useStateQuiz(null);
   const [runKey, setRunKey] = useStateQuiz(0); // bump to force a fresh QuizSession mount + refresh the sessions list
 
@@ -599,7 +454,7 @@ function QuizView({ me, onCorrectCountChange, showToast }) {
       setStage('count');
     }
   };
-  const pickCount = (c) => { setCount(c); setStage('quiz'); setRunKey((k) => k + 1); };
+  const pickCount = (c, d) => { setCount(c); setDifficulty(d || 'medium'); setStage('quiz'); setRunKey((k) => k + 1); };
   const restart = () => { setStage('track'); setTrack(null); setCount(null); setRunKey((k) => k + 1); };
   const openReview = (s) => { setReviewSession(s); setStage('review'); };
 
@@ -613,6 +468,7 @@ function QuizView({ me, onCorrectCountChange, showToast }) {
       key={runKey}
       track={track}
       count={count}
+      difficulty={difficulty}
       onCorrectCountChange={onCorrectCountChange}
       showToast={showToast}
       onRestart={restart}

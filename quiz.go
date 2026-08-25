@@ -193,10 +193,13 @@ func buildWordOrderChips(english string) ([]QuizOption, []string) {
 // buildMultipleChoiceQuestion draws its 3 distractors from the SAME category
 // as the question phrase — a vocabulary word only ever competes against
 // other vocabulary words, never against full-sentence expressions.
-func buildMultipleChoiceQuestion(ctx context.Context, phraseID int, category, english, korean string) (prompt string, options []QuizOption, answer quizAnswerKey, err error) {
+func buildMultipleChoiceQuestion(ctx context.Context, phraseID int, category, english, korean string, optionCount int) (prompt string, options []QuizOption, answer quizAnswerKey, err error) {
+	if optionCount < 2 {
+		optionCount = 4
+	}
 	rows, err := db.Query(ctx, `
-		SELECT id, korean_text FROM phraseup.phrases WHERE id != $1 AND category = $2 ORDER BY random() LIMIT 3
-	`, phraseID, category)
+		SELECT id, korean_text FROM phraseup.phrases WHERE id != $1 AND category = $2 ORDER BY random() LIMIT $3
+	`, phraseID, category, optionCount-1)
 	if err != nil {
 		return "", nil, quizAnswerKey{}, err
 	}
@@ -225,18 +228,35 @@ func buildWordOrderQuestion(english, korean string) (prompt string, options []Qu
 	return korean, options, quizAnswerKey{Order: order}
 }
 
+// difficultyOptionCount is how many multiple-choice options a difficulty
+// shows (1 correct + N-1 distractors).
+func difficultyOptionCount(difficulty string) int {
+	switch difficulty {
+	case "easy":
+		return 3
+	case "hard":
+		return 6
+	default:
+		return 4
+	}
+}
+
 // chooseQuestionType picks a type for one phrase. Vocab track is always
 // multiple-choice (a single word/term can't make a word-order puzzle).
-// Phrase track mixes both when the expression pool is big enough for
-// multiple-choice distractors; below that it falls back to word-order
-// (which only needs the one phrase it's built from).
-func chooseQuestionType(track string, wordCount, categoryTotal int) string {
+// Phrase track by difficulty: easy = multiple-choice only, hard =
+// word-order only (typing-free recall is easier than reconstruction),
+// medium = the classic mix. Falls back to whatever the pool supports.
+func chooseQuestionType(track string, difficulty string, wordCount, categoryTotal int) string {
 	if track == trackVocab {
 		return "multiple_choice"
 	}
 	canWordOrder := wordCount >= 2
 	canMultipleChoice := categoryTotal >= minPhrasesForMultipleChoice
 	switch {
+	case difficulty == "easy" && canMultipleChoice:
+		return "multiple_choice"
+	case difficulty == "hard" && canWordOrder:
+		return "word_order"
 	case canWordOrder && canMultipleChoice:
 		if rand.Intn(2) == 0 {
 			return "multiple_choice"
@@ -364,7 +384,7 @@ func newSessionID() string {
 // and covers up to reviewSessionMax of the user's current mistakes (mixed
 // categories). Returns ("", nil, nil) — not an error — when there's no
 // content to build from (empty category pool, or no mistakes to review).
-func startQuizSession(ctx context.Context, email, track, sourceGroup string, count int) (string, []DailyQuizQuestion, error) {
+func startQuizSession(ctx context.Context, email, track, sourceGroup, difficulty string, count int) (string, []DailyQuizQuestion, error) {
 	var phraseIDs []int
 	var err error
 
@@ -413,7 +433,7 @@ func startQuizSession(ctx context.Context, email, track, sourceGroup string, cou
 			return "", nil, err
 		}
 		wordCount := len(strings.Fields(english))
-		qtype := chooseQuestionType(typeTrack, wordCount, categoryTotal)
+		qtype := chooseQuestionType(typeTrack, difficulty, wordCount, categoryTotal)
 
 		var (
 			prompt  string
@@ -421,7 +441,7 @@ func startQuizSession(ctx context.Context, email, track, sourceGroup string, cou
 			answer  quizAnswerKey
 		)
 		if qtype == "multiple_choice" {
-			prompt, options, answer, err = buildMultipleChoiceQuestion(ctx, phraseID, category, english, korean)
+			prompt, options, answer, err = buildMultipleChoiceQuestion(ctx, phraseID, category, english, korean, difficultyOptionCount(difficulty))
 			if err != nil {
 				return "", nil, err
 			}
@@ -752,9 +772,10 @@ func registerQuizRoutes(r *gin.Engine) {
 			return
 		}
 		var body struct {
-			Track  string `json:"track"`
-			Count  int    `json:"count"`
-			Source string `json:"source"` // "core" (default) | "media"
+			Track      string `json:"track"`
+			Count      int    `json:"count"`
+			Source     string `json:"source"`     // "core" (default) | "media"
+			Difficulty string `json:"difficulty"` // "easy" | "medium" (default) | "hard"
 		}
 		if err := c.ShouldBindJSON(&body); err != nil || !validTrackCount(body.Track, body.Count) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid track/count"})
@@ -762,6 +783,9 @@ func registerQuizRoutes(r *gin.Engine) {
 		}
 		if body.Source != "media" {
 			body.Source = "core"
+		}
+		if body.Difficulty != "easy" && body.Difficulty != "hard" {
+			body.Difficulty = "medium"
 		}
 		ctx := c.Request.Context()
 		if err := ensureUser(ctx, email); err != nil {
@@ -786,7 +810,7 @@ func registerQuizRoutes(r *gin.Engine) {
 			ensureFreshContent(ctx, email, trackCategory(body.Track), body.Count)
 		}
 
-		sessionID, qs, err := startQuizSession(ctx, email, body.Track, body.Source, body.Count)
+		sessionID, qs, err := startQuizSession(ctx, email, body.Track, body.Source, body.Difficulty, body.Count)
 		if err != nil {
 			log.Printf("startQuizSession: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "quiz unavailable"})
