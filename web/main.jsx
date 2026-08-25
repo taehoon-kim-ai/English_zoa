@@ -26,10 +26,37 @@ function addDays(str, delta) {
   return dateStr(d);
 }
 
+// Reusable center-anchored date strip: the selected date sits in the middle
+// chip, arrows step one day with a slide animation, future dates disabled.
+// Used by both the TED Talk and Daily News cards.
+function DateStrip({ date, todayStr, onChange }) {
+  const [direction, setDirection] = useStateMain('none');
+  const strip = [-2, -1, 0, 1, 2].map((offset) => addDays(date, offset));
+  const shift = (delta) => {
+    setDirection(delta < 0 ? 'right' : 'left');
+    const next = addDays(date, delta);
+    onChange(next > todayStr ? todayStr : next);
+  };
+  return (
+    <div className="tedtalk-strip">
+      <button className="strip-arrow" onClick={() => shift(-1)}>‹</button>
+      <div className="strip-window">
+        <div key={date} className={`strip-track slide-${direction}`}>
+          {strip.map((d) => (
+            <div key={d} className={`strip-chip ${d === date ? 'active' : ''} ${d > todayStr ? 'future' : ''}`}>
+              {d.slice(5)}
+            </div>
+          ))}
+        </div>
+      </div>
+      <button className="strip-arrow" onClick={() => shift(1)} disabled={date >= todayStr}>›</button>
+    </div>
+  );
+}
+
 function TedTalkCard() {
   const todayStr = dateStr(new Date());
   const [date, setDate] = useStateMain(todayStr);
-  const [direction, setDirection] = useStateMain('none'); // 'left' | 'right' | 'none' — which way the strip just slid
   const [talk, setTalk] = useStateMain(null);
   const [error, setError] = useStateMain('');
 
@@ -39,20 +66,6 @@ function TedTalkCard() {
 
   if (error) return <div className="card state-msg">{error}</div>;
   if (!talk) return <div className="card state-msg">Loading today's talk...</div>;
-
-  // Center-anchored strip: the selected date always sits in the middle chip.
-  // 5 chips (not 7) — each renders wider than its min-width once padding +
-  // "MM-DD" text are accounted for, and 7 of those overflowed the card and
-  // got clipped by .strip-window's overflow:hidden.
-  const strip = [-2, -1, 0, 1, 2].map((offset) => addDays(date, offset));
-
-  const shift = (delta) => {
-    setDirection(delta < 0 ? 'right' : 'left'); // stepping back slides the strip rightward, forward slides left
-    setDate((d) => {
-      const next = addDays(d, delta);
-      return next > todayStr ? todayStr : next;
-    });
-  };
 
   return (
     <div className="card tedtalk-card">
@@ -69,19 +82,7 @@ function TedTalkCard() {
         <div className="tedtalk-title">{talk.title}</div>
         <div className="tedtalk-speaker">{talk.speaker} · {date}</div>
       </div>
-      <div className="tedtalk-strip">
-        <button className="strip-arrow" onClick={() => shift(-1)}>‹</button>
-        <div className="strip-window">
-          <div key={date} className={`strip-track slide-${direction}`}>
-            {strip.map((d) => (
-              <div key={d} className={`strip-chip ${d === date ? 'active' : ''} ${d > todayStr ? 'future' : ''}`}>
-                {d.slice(5)}
-              </div>
-            ))}
-          </div>
-        </div>
-        <button className="strip-arrow" onClick={() => shift(1)} disabled={date >= todayStr}>›</button>
-      </div>
+      <DateStrip date={date} todayStr={todayStr} onChange={setDate} />
       <TedTalkComments videoId={talk.video_id} />
     </div>
   );
@@ -195,35 +196,54 @@ function DailyGoalRing() {
   );
 }
 
-// Today's English business-news story (news.go) — read the headline, then
-// the full article in English.
+// Daily English business-news story (news.go) with date navigation — one
+// story is archived per day, so past days are browsable like the TED Talk.
+// Layout: thumbnail + source link on the left, EN/KO summaries on the right.
 function NewsCard() {
+  const todayStr = dateStr(new Date());
+  const [date, setDate] = useStateMain(todayStr);
   const [story, setStory] = useStateMain(null);
 
   useEffectMain(() => {
-    api('/api/news/today').then(setStory).catch(() => {});
-  }, []);
-
-  if (!story) return null;
+    setStory(null);
+    api(`/api/news?date=${date}`).then(setStory).catch(() => setStory({ missing: true, date }));
+  }, [date]);
 
   return (
     <div className="card news-card">
-      <div className="tagline" style={{ marginBottom: 8 }}>📰 Today's Business News</div>
-      {story.image_url && <img className="news-thumb" src={story.image_url} alt="" />}
-      <div className="news-title">{story.title}</div>
-      {story.summary && (
-        <div className="news-summary">
-          <span className="news-lang-tag">EN</span> {story.summary}
-        </div>
+      <div className="tagline" style={{ marginBottom: 8 }}>📰 Daily Business News</div>
+
+      {!story && <div className="state-msg">Loading...</div>}
+      {story && story.missing && (
+        <div className="state-msg">No news archived for {story.date} — stories are saved from the day the app started.</div>
       )}
-      {story.summary_ko && (
-        <div className="news-summary ko">
-          <span className="news-lang-tag">KO</span> {story.summary_ko}
-        </div>
+      {story && !story.missing && (
+        <>
+          <div className="news-title">{story.title}</div>
+          <div className="news-grid">
+            <div className="news-left">
+              {story.image_url && <img className="news-thumb" src={story.image_url} alt="" />}
+              <a className="news-link" href={story.url} target="_blank" rel="noopener noreferrer">
+                Read on {story.source} →
+              </a>
+            </div>
+            <div className="news-right">
+              {story.summary && (
+                <div className="news-summary">
+                  <span className="news-lang-tag">EN</span> {story.summary}
+                </div>
+              )}
+              {story.summary_ko && (
+                <div className="news-summary ko">
+                  <span className="news-lang-tag">KO</span> {story.summary_ko}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
       )}
-      <a className="news-link" href={story.url} target="_blank" rel="noopener noreferrer">
-        Read on {story.source} →
-      </a>
+
+      <DateStrip date={date} todayStr={todayStr} onChange={setDate} />
     </div>
   );
 }

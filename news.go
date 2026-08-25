@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 )
@@ -98,22 +103,108 @@ func fetchNewsFromFeed(ctx context.Context) (NewsStory, error) {
 	return NewsStory{}, fmt.Errorf("news feed: no usable items")
 }
 
-// translateNewsSummary renders the story's English summary in Korean via
-// Haiku (cheap; runs at most once a day since the result is cached in
-// daily_news). Best-effort — returns "" on any failure or when no API key is
-// configured, and the UI simply shows the English summary alone.
-func translateNewsSummary(ctx context.Context, title, summary string) string {
-	if strings.TrimSpace(summary) == "" {
-		return ""
-	}
-	// Reuse the translator pipeline (translate.go, Haiku + JSON contract);
-	// only the plain translation is used, the business_version is ignored.
-	result, err := translateText(ctx, title+". "+summary)
+var (
+	reHTMLParagraph = regexp.MustCompile(`(?s)<p[^>]*>(.*?)</p>`)
+	reHTMLTag       = regexp.MustCompile(`<[^>]+>`)
+)
+
+// fetchArticleText pulls the article page and crudely extracts paragraph
+// text — enough raw material for the summarizer, not a rendering-grade
+// parse. Returns "" on any failure (the RSS description alone still works).
+func fetchArticleText(ctx context.Context, url string) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		log.Printf("news: summary translation: %v", err)
 		return ""
 	}
-	return strings.TrimSpace(result.Translation)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		log.Printf("news: article fetch: %v", err)
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 300_000))
+	if err != nil || len(body) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	for _, m := range reHTMLParagraph.FindAllStringSubmatch(string(body), -1) {
+		text := strings.TrimSpace(reHTMLTag.ReplaceAllString(m[1], ""))
+		if len(text) < 40 {
+			continue // skip nav/caption fragments
+		}
+		sb.WriteString(text)
+		sb.WriteString("\n")
+		if sb.Len() > 4000 {
+			break
+		}
+	}
+	return sb.String()
+}
+
+// summarizeNews produces a proper 3-4 sentence English summary plus its
+// Korean rendering via Haiku (cheap; runs at most once a day since the
+// result is cached in daily_news). Falls back to the short RSS description
+// (and "" for Korean) on any failure or when no API key is configured.
+func summarizeNews(ctx context.Context, title, description, articleText string) (summaryEN, summaryKO string) {
+	key := anthropicAPIKey(ctx)
+	if key == "" {
+		return description, ""
+	}
+
+	client := anthropic.NewClient(option.WithAPIKey(key))
+
+	material := description
+	if articleText != "" {
+		material = description + "\n\nArticle text:\n" + articleText
+	}
+	prompt := fmt.Sprintf(`Summarize this business news story for English learners.
+
+Title: %s
+
+%s
+
+Write a clear 3-4 sentence English summary (simple, natural business English), then the same
+summary in natural Korean.
+
+Respond with ONLY a JSON object, no prose, no markdown fences, in exactly this shape:
+{"summary_en": "...", "summary_ko": "..."}`, title, material)
+
+	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     "claude-haiku-4-5",
+		MaxTokens: 1024,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		},
+	})
+	if err != nil {
+		log.Printf("news: summarize: %v", err)
+		return description, ""
+	}
+
+	var raw strings.Builder
+	for _, block := range resp.Content {
+		if tb, ok := block.AsAny().(anthropic.TextBlock); ok {
+			raw.WriteString(tb.Text)
+		}
+	}
+	match := reJSONObject.FindString(raw.String())
+	if match == "" {
+		log.Printf("news: summarize: no JSON in response")
+		return description, ""
+	}
+	var out struct {
+		SummaryEN string `json:"summary_en"`
+		SummaryKO string `json:"summary_ko"`
+	}
+	if err := json.Unmarshal([]byte(match), &out); err != nil || strings.TrimSpace(out.SummaryEN) == "" {
+		log.Printf("news: summarize: parse failed: %v", err)
+		return description, ""
+	}
+	return strings.TrimSpace(out.SummaryEN), strings.TrimSpace(out.SummaryKO)
 }
 
 // ensureTodayNews returns today's cached story, fetching and caching it on
@@ -151,7 +242,8 @@ func ensureTodayNews(ctx context.Context) (NewsStory, error) {
 		return s, nil
 	}
 
-	fetched.SummaryKo = translateNewsSummary(ctx, fetched.Title, fetched.Summary)
+	articleText := fetchArticleText(ctx, fetched.URL)
+	fetched.Summary, fetched.SummaryKo = summarizeNews(ctx, fetched.Title, fetched.Summary, articleText)
 
 	if _, err := db.Exec(ctx, `
 		INSERT INTO phraseup.daily_news (news_date, title, summary, summary_ko, url, image_url, source)
@@ -164,7 +256,60 @@ func ensureTodayNews(ctx context.Context) (NewsStory, error) {
 	return fetched, nil
 }
 
+// getNewsByDate returns the cached story for a past date. Past days only
+// exist from when the app started caching (one row per day) — there's no
+// backfill source, so a miss is a normal state the UI must handle.
+func getNewsByDate(ctx context.Context, dateStr string) (NewsStory, bool) {
+	var s NewsStory
+	var d time.Time
+	err := db.QueryRow(ctx, `
+		SELECT news_date, title, summary, summary_ko, url, image_url, source
+		FROM phraseup.daily_news WHERE news_date = $1
+	`, dateStr).Scan(&d, &s.Title, &s.Summary, &s.SummaryKo, &s.URL, &s.ImageURL, &s.Source)
+	if err != nil {
+		return NewsStory{}, false
+	}
+	s.Date = d.Format("2006-01-02")
+	return s, true
+}
+
 func registerNewsRoutes(r *gin.Engine) {
+	// /api/news?date=YYYY-MM-DD — today (or no date) ensures/fetches; past
+	// dates serve the archive only.
+	r.GET("/api/news", func(c *gin.Context) {
+		if _, ok := requireEmail(c); !ok {
+			return
+		}
+		ctx := c.Request.Context()
+		today := time.Now().In(seoulTZ).Format("2006-01-02")
+		dateStr := c.Query("date")
+		if dateStr == "" {
+			dateStr = today
+		}
+		if _, err := time.Parse("2006-01-02", dateStr); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date"})
+			return
+		}
+
+		if dateStr == today {
+			story, err := ensureTodayNews(ctx)
+			if err != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "news unavailable"})
+				return
+			}
+			c.JSON(http.StatusOK, story)
+			return
+		}
+
+		story, ok := getNewsByDate(ctx, dateStr)
+		if !ok {
+			c.JSON(http.StatusOK, gin.H{"date": dateStr, "missing": true})
+			return
+		}
+		c.JSON(http.StatusOK, story)
+	})
+
+	// Legacy path kept for any cached frontend still calling it.
 	r.GET("/api/news/today", func(c *gin.Context) {
 		if _, ok := requireEmail(c); !ok {
 			return

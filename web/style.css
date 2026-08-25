@@ -123,11 +123,11 @@ button { font-family: var(--font); cursor: pointer; }
 .avatar-btn.active { background: var(--green); border-color: var(--green-dark); }
 
 main { flex: 1; max-width: 640px; width: 100%; margin: 0 auto; padding: 28px 18px 72px; }
-main.main-wide { max-width: 960px; }
+main.main-wide { max-width: 1240px; }
 
 /* ── main page (TED Talk + team + mini leaderboard) ───────────────────────── */
 .main-grid { display: grid; grid-template-columns: 1fr; gap: 20px; align-items: start; }
-@media (min-width: 860px) { .main-grid { grid-template-columns: 2fr 1fr; } }
+@media (min-width: 860px) { .main-grid { grid-template-columns: 5fr 2fr; } }
 .main-col-primary, .main-col-sidebar { display: flex; flex-direction: column; gap: 20px; }
 
 /* quiz page: sidebar (history) on the LEFT, quiz content on the right —
@@ -511,3 +511,9 @@ main.main-wide { max-width: 960px; }
   background: #eef9ff; color: var(--blue-dark); border: 1px solid #cdecfc;
 }
 .news-summary.ko .news-lang-tag { background: #fff7de; color: var(--gold-dark); border-color: #ffe9a8; }
+
+/* ── news card split layout ────────────────────────────────────────────── */
+.news-grid { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
+@media (min-width: 640px) { .news-grid { grid-template-columns: 240px 1fr; } }
+.news-left { display: flex; flex-direction: column; gap: 10px; }
+.news-right { display: flex; flex-direction: column; gap: 12px; }
