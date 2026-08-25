@@ -43,6 +43,8 @@ const TRACKS = [
   { key: 'phrase', title: 'Phrase Quiz', icon: '💬', desc: 'Full workplace sentences', counts: [5, 10, 15] },
 ];
 
+const REVIEW_TRACK = { key: 'review', title: 'Mistake Review', icon: '🔁', desc: 'Retry what you got wrong', counts: [] };
+
 function TrackSelect({ onPick }) {
   return (
     <div className="quiz-wrap">
@@ -55,6 +57,11 @@ function TrackSelect({ onPick }) {
             <div className="track-card-desc">{t.desc}</div>
           </button>
         ))}
+        <button className="track-card review" onClick={() => onPick(REVIEW_TRACK)}>
+          <div className="track-card-icon">{REVIEW_TRACK.icon}</div>
+          <div className="track-card-title">{REVIEW_TRACK.title}</div>
+          <div className="track-card-desc">{REVIEW_TRACK.desc}</div>
+        </button>
       </div>
     </div>
   );
@@ -333,7 +340,7 @@ function PastQuizzesPanel({ onReview, refreshKey }) {
       <div className="mini-lb-title">📝 Past Quizzes</div>
       {sessions.map((s) => (
         <button key={s.session_id} className="session-row" onClick={() => onReview(s)}>
-          <span className="session-track">{s.track === 'vocab' ? '🔤' : '💬'}</span>
+          <span className="session-track">{s.track === 'vocab' ? '🔤' : s.track === 'review' ? '🔁' : '💬'}</span>
           <span className="session-date">{s.started_at.slice(5, 16)}</span>
           <span className="session-score">{s.correct}/{s.total}</span>
           <span className="session-arrow">›</span>
@@ -357,7 +364,7 @@ function QuizReview({ session, onBack }) {
   return (
     <div className="quiz-wrap">
       <div className="tagline">
-        {session.track === 'vocab' ? '🔤 Vocab Quiz' : '💬 Phrase Quiz'} · {session.started_at} · {session.correct}/{session.total}
+        {session.track === 'vocab' ? '🔤 Vocab Quiz' : session.track === 'review' ? '🔁 Mistake Review' : '💬 Phrase Quiz'} · {session.started_at} · {session.correct}/{session.total}
       </div>
       {items === null && <div className="state-msg">Loading review...</div>}
       {items && items.map((item) => (
@@ -399,7 +406,16 @@ function QuizView({ me, onCorrectCountChange, showToast }) {
   const [reviewSession, setReviewSession] = useStateQuiz(null);
   const [runKey, setRunKey] = useStateQuiz(0); // bump to force a fresh QuizSession mount + refresh the sessions list
 
-  const pickTrack = (t) => { setTrack(t); setStage('count'); };
+  const pickTrack = (t) => {
+    setTrack(t);
+    if (t.key === 'review') {
+      setCount(0); // server decides review size
+      setStage('quiz');
+      setRunKey((k) => k + 1);
+    } else {
+      setStage('count');
+    }
+  };
   const pickCount = (c) => { setCount(c); setStage('quiz'); setRunKey((k) => k + 1); };
   const restart = () => { setStage('track'); setTrack(null); setCount(null); setRunKey((k) => k + 1); };
   const openReview = (s) => { setReviewSession(s); setStage('review'); };

@@ -76,11 +76,18 @@ var quizSchemaStmts = []string{
 		UNIQUE (email, session_id, seq)
 	)`,
 	`ALTER TABLE phraseup.quiz_questions ADD COLUMN IF NOT EXISTS user_answer JSONB`,
+	// 'review' sessions (mistake practice) reuse the same table with a third
+	// track value — widen the CHECK constraint that predates it.
+	`ALTER TABLE phraseup.quiz_questions DROP CONSTRAINT IF EXISTS quiz_questions_track_check`,
+	`ALTER TABLE phraseup.quiz_questions ADD CONSTRAINT quiz_questions_track_check CHECK (track IN ('vocab', 'phrase', 'review'))`,
 }
 
 const (
 	trackVocab  = "vocab"
 	trackPhrase = "phrase"
+	trackReview = "review" // mistake practice — phrases whose latest answer was wrong
+
+	reviewSessionMax = 10 // a review session covers up to this many mistakes
 
 	minPhrasesForMultipleChoice = 4 // 1 correct + 3 distractors, same category
 )
@@ -104,6 +111,8 @@ func validTrackCount(track string, count int) bool {
 		allowed = vocabCounts
 	case trackPhrase:
 		allowed = phraseCounts
+	case trackReview:
+		return true // size is server-decided (min(reviewSessionMax, mistakes available))
 	default:
 		return false
 	}
@@ -279,6 +288,36 @@ func pickSessionPhraseIDs(ctx context.Context, email, category string, count int
 	return ids, padRows.Err()
 }
 
+// pickMistakePhraseIDs returns phrases whose LATEST graded answer (across
+// all sessions and both tracks) was incorrect — answering one correctly in a
+// later session removes it from the mistake pool automatically.
+func pickMistakePhraseIDs(ctx context.Context, email string, limit int) ([]int, error) {
+	rows, err := db.Query(ctx, `
+		SELECT phrase_id FROM (
+			SELECT DISTINCT ON (phrase_id) phrase_id, result
+			FROM phraseup.quiz_questions
+			WHERE email = $1 AND result IS NOT NULL
+			ORDER BY phrase_id, answered_at DESC
+		) latest
+		WHERE result = 'incorrect'
+		ORDER BY random()
+		LIMIT $2
+	`, email, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func loadSession(ctx context.Context, email, sessionID string) ([]DailyQuizQuestion, error) {
 	rows, err := db.Query(ctx, `
 		SELECT id, seq, category, question_type, prompt, options, COALESCE(result, '')
@@ -311,34 +350,59 @@ func newSessionID() string {
 }
 
 // startQuizSession generates a fresh set of `count` questions for one track
-// and returns its session id + questions. Returns ("", nil, nil) — not an
-// error — when the track's category has no phrases yet at all.
+// and returns its session id + questions. The review track ignores `count`
+// and covers up to reviewSessionMax of the user's current mistakes (mixed
+// categories). Returns ("", nil, nil) — not an error — when there's no
+// content to build from (empty category pool, or no mistakes to review).
 func startQuizSession(ctx context.Context, email, track string, count int) (string, []DailyQuizQuestion, error) {
-	category := trackCategory(track)
+	var phraseIDs []int
+	var err error
 
-	var categoryTotal int
-	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases WHERE category = $1`, category).Scan(&categoryTotal); err != nil {
-		return "", nil, err
+	if track == trackReview {
+		phraseIDs, err = pickMistakePhraseIDs(ctx, email, reviewSessionMax)
+	} else {
+		category := trackCategory(track)
+		var categoryTotal int
+		if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases WHERE category = $1`, category).Scan(&categoryTotal); err != nil {
+			return "", nil, err
+		}
+		if categoryTotal == 0 {
+			return "", nil, nil
+		}
+		phraseIDs, err = pickSessionPhraseIDs(ctx, email, category, count)
 	}
-	if categoryTotal == 0 {
-		return "", nil, nil
-	}
-
-	phraseIDs, err := pickSessionPhraseIDs(ctx, email, category, count)
 	if err != nil {
 		return "", nil, err
+	}
+	if len(phraseIDs) == 0 {
+		return "", nil, nil
 	}
 
 	sessionID := newSessionID()
 	for seq, phraseID := range phraseIDs {
-		var english, korean string
+		var category, english, korean string
 		if err := db.QueryRow(ctx, `
-			SELECT english_text, korean_text FROM phraseup.phrases WHERE id = $1
-		`, phraseID).Scan(&english, &korean); err != nil {
+			SELECT category, english_text, korean_text FROM phraseup.phrases WHERE id = $1
+		`, phraseID).Scan(&category, &english, &korean); err != nil {
+			return "", nil, err
+		}
+
+		// The review track mixes categories, so pick the question type by
+		// the phrase's own category (vocabulary can't be a word-order
+		// puzzle); distractor availability is checked per category.
+		typeTrack := track
+		if track == trackReview {
+			typeTrack = trackPhrase
+			if category == "vocabulary" {
+				typeTrack = trackVocab
+			}
+		}
+		var categoryTotal int
+		if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases WHERE category = $1`, category).Scan(&categoryTotal); err != nil {
 			return "", nil, err
 		}
 		wordCount := len(strings.Fields(english))
-		qtype := chooseQuestionType(track, wordCount, categoryTotal)
+		qtype := chooseQuestionType(typeTrack, wordCount, categoryTotal)
 
 		var (
 			prompt  string
@@ -701,7 +765,9 @@ func registerQuizRoutes(r *gin.Engine) {
 		if _, err := ensureTodayPhrase(ctx); err != nil {
 			log.Printf("ensureTodayPhrase: %v", err)
 		}
-		ensureFreshContent(ctx, email, trackCategory(body.Track), body.Count)
+		if body.Track != trackReview {
+			ensureFreshContent(ctx, email, trackCategory(body.Track), body.Count)
+		}
 
 		sessionID, qs, err := startQuizSession(ctx, email, body.Track, body.Count)
 		if err != nil {
@@ -710,7 +776,11 @@ func registerQuizRoutes(r *gin.Engine) {
 			return
 		}
 		if qs == nil {
-			c.JSON(http.StatusOK, gin.H{"session_id": "", "questions": []DailyQuizQuestion{}, "message": "No content for this track yet — check back soon."})
+			msg := "No content for this track yet — check back soon."
+			if body.Track == trackReview {
+				msg = "No mistakes to review — everything you've missed has been re-answered correctly. 🎉"
+			}
+			c.JSON(http.StatusOK, gin.H{"session_id": "", "questions": []DailyQuizQuestion{}, "message": msg})
 			return
 		}
 		answered, correct := tallyResults(qs)

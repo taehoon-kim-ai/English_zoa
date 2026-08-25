@@ -532,3 +532,69 @@ main.main-wide { max-width: 1680px; }
 @media (min-width: 640px) { .news-grid { grid-template-columns: 300px 1fr; } }
 .news-left { display: flex; flex-direction: column; gap: 10px; }
 .news-right { display: flex; flex-direction: column; gap: 12px; }
+
+/* ── DeepL-style translator ────────────────────────────────────────────── */
+.deepl-wrap { display: flex; flex-direction: column; gap: 20px; }
+.deepl-panes {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+@media (min-width: 860px) { .deepl-panes { grid-template-columns: 1fr auto 1fr; } }
+.deepl-pane { display: flex; flex-direction: column; min-height: 340px; padding: 18px 22px; }
+.deepl-pane.output { background: var(--bg-soft); }
+.deepl-pane.loading .deepl-output { opacity: 0.5; }
+.deepl-divider {
+  display: none;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 18px;
+  font-weight: 900;
+  padding: 0 4px;
+  border-left: 1px solid var(--border);
+}
+@media (min-width: 860px) { .deepl-divider { display: flex; } }
+.deepl-pane-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-bottom: 12px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.deepl-lang { font-size: 13px; font-weight: 800; color: var(--text); }
+.deepl-lang.gold { color: var(--gold-dark); }
+.deepl-status { font-size: 12px; font-weight: 700; color: var(--text-muted); }
+.deepl-input {
+  flex: 1;
+  border: none;
+  resize: none;
+  font-family: var(--font);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text);
+  background: transparent;
+}
+.deepl-input:focus { outline: none; }
+.deepl-output { flex: 1; font-size: 21px; font-weight: 600; line-height: 1.5; white-space: pre-wrap; }
+.deepl-output.biz { font-size: 17px; min-height: 40px; }
+.deepl-placeholder { color: var(--text-muted); font-size: 15px; font-weight: 600; }
+.deepl-pane-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; min-height: 24px; }
+.deepl-count { font-size: 12px; font-weight: 700; color: var(--text-muted); }
+.deepl-copy {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+.deepl-copy:hover { color: var(--text); border-color: var(--text-muted); }
+.deepl-biz.loading .deepl-output { opacity: 0.5; }
+
+/* mistake-review track card accent */
+.track-card.review:hover { border-color: var(--gold); }

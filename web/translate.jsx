@@ -1,17 +1,21 @@
-// ── section: translator — 3rd main tab. Pairs with translate.go. Split-pane
-// layout: type on the left, translation + Business Version on the right.
-// Auto-translates 800ms after the user stops typing (debounced). Shift+Enter
-// inserts a newline. Repeat inputs are served from server-side cache (⚡ badge).
-const { useState: useStateTranslate, useRef: useRefTranslate, useEffect: useEffectTranslate } = React;
+// ── section: translator — DeepL-inspired layout: two large side-by-side
+// panes, auto language detection, live translation ~800ms after typing
+// pauses (Seungheon's debounce), copy buttons, character count. Business
+// Version rides below the output pane. Pairs with translate.go.
+const { useState: useStateTranslate, useRef: useRefTranslate } = React;
+
+const TRANSLATE_MAX_CHARS = 500;
 
 function TranslateView() {
   const [text, setText] = useStateTranslate('');
   const [result, setResult] = useStateTranslate(null);
   const [error, setError] = useStateTranslate('');
   const [loading, setLoading] = useStateTranslate(false);
+  const [copied, setCopied] = useStateTranslate(''); // 'main' | 'biz' | ''
   const requestSeq = useRefTranslate(0);
   const debounceTimer = useRefTranslate(null);
   const lastTranslated = useRefTranslate('');
+  const copiedTimer = useRefTranslate(null);
 
   const translate = async (input) => {
     const trimmed = (input !== undefined ? input : text).trim();
@@ -34,7 +38,7 @@ function TranslateView() {
   };
 
   const onTextChange = (e) => {
-    const val = e.target.value;
+    const val = e.target.value.slice(0, TRANSLATE_MAX_CHARS);
     setText(val);
     clearTimeout(debounceTimer.current);
     if (val.trim() && val.trim() !== lastTranslated.current) {
@@ -50,43 +54,73 @@ function TranslateView() {
     }
   };
 
-  return (
-    <div className="quiz-wrap">
-      <div className="tagline">🌐 Translator</div>
+  const copy = (which, value) => {
+    if (!value || !navigator.clipboard) return;
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(which);
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(''), 1200);
+    });
+  };
 
-      <div className="translate-grid">
-        <div className="card translate-pane">
-          <div className="mini-lb-title">Korean or English</div>
+  const sourceLabel = result
+    ? (result.detected_lang === 'ko' ? 'Korean (detected)' : 'English (detected)')
+    : 'Detect language';
+  const targetLabel = result
+    ? (result.detected_lang === 'ko' ? 'English' : 'Korean')
+    : 'Translation';
+
+  return (
+    <div className="deepl-wrap">
+      <div className="deepl-panes">
+        <div className="deepl-pane">
+          <div className="deepl-pane-head">
+            <span className="deepl-lang">{sourceLabel}</span>
+          </div>
           <textarea
-            className="translate-input tall"
+            className="deepl-input"
             value={text}
             onChange={onTextChange}
             onKeyDown={onKeyDown}
-            placeholder="Type and it auto-translates... e.g. 이거 언제까지 끝낼 수 있어요? (Shift+Enter for a new line)"
+            placeholder="Type to translate."
+            autoFocus
           />
-          <button className="duo-btn blue" onClick={() => { clearTimeout(debounceTimer.current); translate(); }} disabled={loading || !text.trim()}>
-            {loading ? 'Translating...' : 'Translate ⏎'}
-          </button>
+          <div className="deepl-pane-foot">
+            <span className="deepl-count">{text.length}/{TRANSLATE_MAX_CHARS}</span>
+          </div>
         </div>
 
-        <div className="translate-pane-col">
-          <div className={`card translate-pane ${loading ? 'loading' : ''}`}>
-            <div className="mini-lb-title">
-              Translation
-              {result && (result.detected_lang === 'ko' ? ' (Korean → English)' : ' (English → Korean)')}
-              {result && result.cached && ' ⚡'}
-            </div>
-            <div className="translate-text">
-              {result ? result.translation : <span className="translate-placeholder">Press Enter to translate</span>}
-            </div>
-          </div>
+        <div className="deepl-divider" aria-hidden="true">⇄</div>
 
-          <div className={`card translate-pane business ${loading ? 'loading' : ''}`}>
-            <div className="mini-lb-title">💼 Business Version</div>
-            <div className="translate-text">
-              {result ? result.business_version : <span className="translate-placeholder">A professional business-English rewrite</span>}
-            </div>
+        <div className={`deepl-pane output ${loading ? 'loading' : ''}`}>
+          <div className="deepl-pane-head">
+            <span className="deepl-lang">{targetLabel}</span>
+            {loading && <span className="deepl-status">Translating…</span>}
           </div>
+          <div className="deepl-output">
+            {result ? result.translation : <span className="deepl-placeholder">Translation appears here as you type</span>}
+          </div>
+          <div className="deepl-pane-foot">
+            {result && (
+              <button className="deepl-copy" onClick={() => copy('main', result.translation)}>
+                {copied === 'main' ? '✓ Copied' : '⧉ Copy'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className={`card deepl-biz ${loading ? 'loading' : ''}`}>
+        <div className="deepl-pane-head">
+          <span className="deepl-lang gold">💼 Business Version</span>
+          {result && (
+            <button className="deepl-copy" onClick={() => copy('biz', result.business_version)}>
+              {copied === 'biz' ? '✓ Copied' : '⧉ Copy'}
+            </button>
+          )}
+        </div>
+        <div className="deepl-output biz">
+          {result ? result.business_version : <span className="deepl-placeholder">A polished, professional business-English rewrite of your text</span>}
         </div>
       </div>
 
