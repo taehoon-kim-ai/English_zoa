@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 )
 
 // ── section: gamification — daily goal + badges. No table of its own: every
@@ -38,10 +40,13 @@ type DailyGoal struct {
 // per-track targets (users.goal_vocab / users.goal_phrase, editable on the
 // profile page).
 func getDailyGoal(ctx context.Context, email string) (DailyGoal, error) {
-	var g DailyGoal
-	if err := db.QueryRow(ctx, `
+	// Defaults cover the brand-new-user race where /api/stats lands before
+	// /api/me has created the users row.
+	g := DailyGoal{Vocab: TrackGoal{Goal: 10}, Phrase: TrackGoal{Goal: 5}}
+	err := db.QueryRow(ctx, `
 		SELECT goal_vocab, goal_phrase FROM phraseup.users WHERE email = $1
-	`, email).Scan(&g.Vocab.Goal, &g.Phrase.Goal); err != nil {
+	`, email).Scan(&g.Vocab.Goal, &g.Phrase.Goal)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return g, err
 	}
 

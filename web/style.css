@@ -501,3 +501,13 @@ main.main-wide { max-width: 960px; }
   display: inline-block; font-size: 10px; font-weight: 900; text-transform: uppercase;
   letter-spacing: 0.04em; color: var(--text-muted); margin-right: 6px; min-width: 56px;
 }
+
+/* ── news summary language tags ────────────────────────────────────────── */
+.news-lang-tag {
+  display: inline-block;
+  font-size: 10px; font-weight: 900;
+  padding: 1px 6px; border-radius: 6px; margin-right: 4px;
+  vertical-align: 1px;
+  background: #eef9ff; color: var(--blue-dark); border: 1px solid #cdecfc;
+}
+.news-summary.ko .news-lang-tag { background: #fff7de; color: var(--gold-dark); border-color: #ffe9a8; }

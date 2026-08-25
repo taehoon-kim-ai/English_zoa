@@ -29,20 +29,23 @@ var newsSchemaStmts = []string{
 		news_date  DATE PRIMARY KEY,
 		title      TEXT NOT NULL,
 		summary    TEXT NOT NULL,
+		summary_ko TEXT NOT NULL DEFAULT '',
 		url        TEXT NOT NULL,
 		image_url  TEXT NOT NULL DEFAULT '',
 		source     TEXT NOT NULL DEFAULT 'BBC Business',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`,
+	`ALTER TABLE phraseup.daily_news ADD COLUMN IF NOT EXISTS summary_ko TEXT NOT NULL DEFAULT ''`,
 }
 
 type NewsStory struct {
-	Date     string `json:"date"`
-	Title    string `json:"title"`
-	Summary  string `json:"summary"`
-	URL      string `json:"url"`
-	ImageURL string `json:"image_url"`
-	Source   string `json:"source"`
+	Date      string `json:"date"`
+	Title     string `json:"title"`
+	Summary   string `json:"summary"`
+	SummaryKo string `json:"summary_ko"`
+	URL       string `json:"url"`
+	ImageURL  string `json:"image_url"`
+	Source    string `json:"source"`
 }
 
 type rssFeed struct {
@@ -95,6 +98,24 @@ func fetchNewsFromFeed(ctx context.Context) (NewsStory, error) {
 	return NewsStory{}, fmt.Errorf("news feed: no usable items")
 }
 
+// translateNewsSummary renders the story's English summary in Korean via
+// Haiku (cheap; runs at most once a day since the result is cached in
+// daily_news). Best-effort — returns "" on any failure or when no API key is
+// configured, and the UI simply shows the English summary alone.
+func translateNewsSummary(ctx context.Context, title, summary string) string {
+	if strings.TrimSpace(summary) == "" {
+		return ""
+	}
+	// Reuse the translator pipeline (translate.go, Haiku + JSON contract);
+	// only the plain translation is used, the business_version is ignored.
+	result, err := translateText(ctx, title+". "+summary)
+	if err != nil {
+		log.Printf("news: summary translation: %v", err)
+		return ""
+	}
+	return strings.TrimSpace(result.Translation)
+}
+
 // ensureTodayNews returns today's cached story, fetching and caching it on
 // the first request of the day (Seoul time). On fetch failure it falls back
 // to the most recent cached story rather than erroring the widget.
@@ -104,9 +125,9 @@ func ensureTodayNews(ctx context.Context) (NewsStory, error) {
 	var s NewsStory
 	var d time.Time
 	err := db.QueryRow(ctx, `
-		SELECT news_date, title, summary, url, image_url, source
+		SELECT news_date, title, summary, summary_ko, url, image_url, source
 		FROM phraseup.daily_news WHERE news_date = $1
-	`, today).Scan(&d, &s.Title, &s.Summary, &s.URL, &s.ImageURL, &s.Source)
+	`, today).Scan(&d, &s.Title, &s.Summary, &s.SummaryKo, &s.URL, &s.ImageURL, &s.Source)
 	if err == nil {
 		s.Date = d.Format("2006-01-02")
 		return s, nil
@@ -120,9 +141,9 @@ func ensureTodayNews(ctx context.Context) (NewsStory, error) {
 		log.Printf("news: %v", fetchErr)
 		// Fall back to the newest cached story from a previous day.
 		err = db.QueryRow(ctx, `
-			SELECT news_date, title, summary, url, image_url, source
+			SELECT news_date, title, summary, summary_ko, url, image_url, source
 			FROM phraseup.daily_news ORDER BY news_date DESC LIMIT 1
-		`).Scan(&d, &s.Title, &s.Summary, &s.URL, &s.ImageURL, &s.Source)
+		`).Scan(&d, &s.Title, &s.Summary, &s.SummaryKo, &s.URL, &s.ImageURL, &s.Source)
 		if err != nil {
 			return NewsStory{}, fetchErr
 		}
@@ -130,11 +151,13 @@ func ensureTodayNews(ctx context.Context) (NewsStory, error) {
 		return s, nil
 	}
 
+	fetched.SummaryKo = translateNewsSummary(ctx, fetched.Title, fetched.Summary)
+
 	if _, err := db.Exec(ctx, `
-		INSERT INTO phraseup.daily_news (news_date, title, summary, url, image_url, source)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO phraseup.daily_news (news_date, title, summary, summary_ko, url, image_url, source)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (news_date) DO NOTHING
-	`, today, fetched.Title, fetched.Summary, fetched.URL, fetched.ImageURL, fetched.Source); err != nil {
+	`, today, fetched.Title, fetched.Summary, fetched.SummaryKo, fetched.URL, fetched.ImageURL, fetched.Source); err != nil {
 		log.Printf("news: cache save: %v", err)
 	}
 	fetched.Date = today
