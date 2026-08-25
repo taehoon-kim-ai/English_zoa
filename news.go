@@ -138,14 +138,14 @@ func fetchArticleText(ctx context.Context, url string) string {
 		}
 		sb.WriteString(text)
 		sb.WriteString("\n")
-		if sb.Len() > 4000 {
+		if sb.Len() > 8000 {
 			break
 		}
 	}
 	return sb.String()
 }
 
-// summarizeNews produces a proper 3-4 sentence English summary plus its
+// summarizeNews produces a detailed multi-paragraph English summary plus its
 // Korean rendering via Haiku (cheap; runs at most once a day since the
 // result is cached in daily_news). Falls back to the short RSS description
 // (and "" for Korean) on any failure or when no API key is configured.
@@ -167,15 +167,17 @@ Title: %s
 
 %s
 
-Write a clear 3-4 sentence English summary (simple, natural business English), then the same
-summary in natural Korean.
+Write a DETAILED English summary: 10-14 sentences across 2-3 paragraphs, in clear, natural
+business English. Cover the key facts, the numbers involved, the background/context, and why
+it matters. Separate paragraphs with \n\n. Then write the same summary in natural Korean,
+matching the paragraph structure.
 
 Respond with ONLY a JSON object, no prose, no markdown fences, in exactly this shape:
 {"summary_en": "...", "summary_ko": "..."}`, title, material)
 
 	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     "claude-haiku-4-5",
-		MaxTokens: 1024,
+		MaxTokens: 3000,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
 		},
