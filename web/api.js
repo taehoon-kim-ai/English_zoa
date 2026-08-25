@@ -15,3 +15,14 @@ async function api(path, opts) {
   }
   return res.json();
 }
+
+// Speak English text with the browser's built-in TTS — free, no API calls.
+// Cancels any ongoing speech first so rapid clicks don't queue up.
+function speakEnglish(text) {
+  if (!('speechSynthesis' in window) || !text) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'en-US';
+  u.rate = 0.95;
+  window.speechSynthesis.speak(u);
+}

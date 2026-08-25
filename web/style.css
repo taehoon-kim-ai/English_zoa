@@ -458,3 +458,46 @@ main.main-wide { max-width: 960px; }
 .goal-ring-wrap.small { width: 96px; height: 96px; }
 .goal-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .history-track { margin-left: 10px; }
+
+/* ── TTS buttons ───────────────────────────────────────────────────────── */
+.tts-btn {
+  border: none; background: none; font-size: 16px; padding: 2px 6px;
+  vertical-align: middle; opacity: 0.7;
+}
+.tts-btn:hover { opacity: 1; }
+.tts-btn.big { font-size: 20px; }
+
+/* ── word of the day ───────────────────────────────────────────────────── */
+.wod-card { text-align: center; }
+.wod-english { font-size: 22px; font-weight: 900; }
+.wod-korean { font-size: 14px; font-weight: 700; color: var(--text-muted); margin-top: 4px; }
+
+/* ── past quizzes list ─────────────────────────────────────────────────── */
+.session-row {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 8px 4px;
+  border: none; border-bottom: 1px solid var(--border);
+  background: none; text-align: left;
+  font-family: var(--font); font-size: 13px; font-weight: 700;
+}
+.session-row:last-child { border-bottom: none; }
+.session-row:hover { background: var(--bg-soft); }
+.session-date { flex: 1; color: var(--text-muted); }
+.session-score { font-weight: 800; }
+.session-arrow { color: var(--text-muted); font-weight: 900; }
+
+/* ── quiz review ───────────────────────────────────────────────────────── */
+.quiz-complete-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.review-item { width: 100%; padding: 14px 18px; }
+.review-item.correct { border-left: 5px solid var(--green); }
+.review-item.incorrect { border-left: 5px solid var(--red); }
+.review-head { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 15px; }
+.review-prompt { flex: 1; }
+.review-answers { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.review-line { font-size: 14px; font-weight: 600; }
+.review-line.correct-line { color: var(--green-dark); }
+.review-line.your-line { color: var(--red-dark); }
+.review-label {
+  display: inline-block; font-size: 10px; font-weight: 900; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-muted); margin-right: 6px; min-width: 56px;
+}

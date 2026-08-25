@@ -69,11 +69,13 @@ var quizSchemaStmts = []string{
 		prompt         TEXT NOT NULL,
 		options        JSONB NOT NULL,
 		correct_answer JSONB NOT NULL,
+		user_answer    JSONB,
 		result         TEXT CHECK (result IN ('correct', 'incorrect')),
 		answered_at    TIMESTAMPTZ,
 		created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		UNIQUE (email, session_id, seq)
 	)`,
+	`ALTER TABLE phraseup.quiz_questions ADD COLUMN IF NOT EXISTS user_answer JSONB`,
 }
 
 const (
@@ -124,6 +126,13 @@ type QuizOption struct {
 type quizAnswerKey struct {
 	CorrectID string   `json:"correct_id,omitempty"` // multiple_choice
 	Order     []string `json:"order,omitempty"`      // word_order, in correct sequence
+}
+
+// userSubmission is what the user actually answered (user_answer column),
+// stored at grading time for the review screen.
+type userSubmission struct {
+	SelectedID string   `json:"selected_id,omitempty"` // multiple_choice
+	OrderedIDs []string `json:"ordered_ids,omitempty"` // word_order
 }
 
 type DailyQuizQuestion struct {
@@ -429,6 +438,120 @@ func getQuizHistory(ctx context.Context, email string, days int) ([]QuizDayStat,
 	return stats, nil
 }
 
+type QuizSessionSummary struct {
+	SessionID string `json:"session_id"`
+	Track     string `json:"track"`
+	StartedAt string `json:"started_at"`
+	Total     int    `json:"total"`
+	Answered  int    `json:"answered"`
+	Correct   int    `json:"correct"`
+}
+
+func getQuizSessions(ctx context.Context, email string, limit int) ([]QuizSessionSummary, error) {
+	rows, err := db.Query(ctx, `
+		SELECT session_id, track, MIN(created_at) AS started,
+		       COUNT(*), COUNT(result), COUNT(*) FILTER (WHERE result = 'correct')
+		FROM phraseup.quiz_questions
+		WHERE email = $1
+		GROUP BY session_id, track
+		ORDER BY started DESC
+		LIMIT $2
+	`, email, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sessions := []QuizSessionSummary{}
+	for rows.Next() {
+		var s QuizSessionSummary
+		var started time.Time
+		if err := rows.Scan(&s.SessionID, &s.Track, &started, &s.Total, &s.Answered, &s.Correct); err != nil {
+			continue
+		}
+		s.StartedAt = started.In(seoulTZ).Format("2006-01-02 15:04")
+		sessions = append(sessions, s)
+	}
+	return sessions, rows.Err()
+}
+
+type QuizReviewItem struct {
+	Seq          int    `json:"seq"`
+	Category     string `json:"category"`
+	QuestionType string `json:"question_type"`
+	Prompt       string `json:"prompt"`
+	Result       string `json:"result"` // "" = never answered
+	CorrectText  string `json:"correct_text"`
+	YourText     string `json:"your_text"` // "" for unanswered or pre-feature rows
+}
+
+// resolveAnswerText renders an answer key / submission as display text —
+// the Korean meaning for multiple choice, the assembled sentence for
+// word order. Pure function, unit-tested in quiz_test.go.
+func resolveAnswerText(qtype string, options []QuizOption, selectedID string, orderedIDs []string) string {
+	textByID := make(map[string]string, len(options))
+	koByID := make(map[string]string, len(options))
+	for _, opt := range options {
+		textByID[opt.ID] = opt.Text
+		koByID[opt.ID] = opt.KoreanText
+	}
+	if qtype == "multiple_choice" {
+		return koByID[selectedID]
+	}
+	words := make([]string, 0, len(orderedIDs))
+	for _, id := range orderedIDs {
+		if w, ok := textByID[id]; ok {
+			words = append(words, w)
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+// getSessionReview returns a finished (or partial) session with the correct
+// answer and the user's own answer resolved to display text. Correct answers
+// are only revealed for questions that have been graded — an unanswered
+// question in an abandoned session stays hidden so the session could still
+// be finished honestly later.
+func getSessionReview(ctx context.Context, email, sessionID string) ([]QuizReviewItem, error) {
+	rows, err := db.Query(ctx, `
+		SELECT seq, category, question_type, prompt, options, correct_answer,
+		       COALESCE(result, ''), user_answer
+		FROM phraseup.quiz_questions
+		WHERE email = $1 AND session_id = $2
+		ORDER BY seq
+	`, email, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []QuizReviewItem{}
+	for rows.Next() {
+		var item QuizReviewItem
+		var optionsRaw, answerRaw []byte
+		var userRaw []byte
+		if err := rows.Scan(&item.Seq, &item.Category, &item.QuestionType, &item.Prompt,
+			&optionsRaw, &answerRaw, &item.Result, &userRaw); err != nil {
+			continue
+		}
+		if item.Result != "" {
+			var options []QuizOption
+			var answer quizAnswerKey
+			if json.Unmarshal(optionsRaw, &options) == nil && json.Unmarshal(answerRaw, &answer) == nil {
+				item.CorrectText = resolveAnswerText(item.QuestionType, options, answer.CorrectID, answer.Order)
+				if len(userRaw) > 0 {
+					var sub userSubmission
+					if json.Unmarshal(userRaw, &sub) == nil {
+						item.YourText = resolveAnswerText(item.QuestionType, options, sub.SelectedID, sub.OrderedIDs)
+					}
+				}
+			}
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func tallyResults(qs []DailyQuizQuestion) (answered, correct int) {
 	for _, q := range qs {
 		if q.Result != "" {
@@ -529,9 +652,15 @@ func recordQuizAnswer(ctx context.Context, email string, questionID int, selecte
 	if correct {
 		result = "correct"
 	}
+	// Store what the user actually submitted so past sessions can be
+	// reviewed later (quiz review screen).
+	userAnswerJSON, err := json.Marshal(userSubmission{SelectedID: selectedID, OrderedIDs: orderedIDs})
+	if err != nil {
+		return false, false, quizAnswerKey{}, err
+	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE phraseup.quiz_questions SET result = $2, answered_at = NOW() WHERE id = $1
-	`, questionID, result); err != nil {
+		UPDATE phraseup.quiz_questions SET result = $2, user_answer = $3, answered_at = NOW() WHERE id = $1
+	`, questionID, result, userAnswerJSON); err != nil {
 		return false, false, quizAnswerKey{}, err
 	}
 
@@ -563,15 +692,16 @@ func registerQuizRoutes(r *gin.Engine) {
 		}
 		// Feed the pool before building the session: full curated static list
 		// (phrase.go, one-time bulk seed), one Slack-sourced phrase for today
-		// if configured, and an AI top-up batch if running low (ai.go) — all
-		// best-effort.
+		// if configured, and — if this user has fewer unseen items in the
+		// track than the session needs — a synchronous AI generation so the
+		// session doesn't fill up with repeats (ai.go). All best-effort.
 		if err := seedStaticPhrasesIfMissing(ctx); err != nil {
 			log.Printf("seedStaticPhrasesIfMissing: %v", err)
 		}
 		if _, err := ensureTodayPhrase(ctx); err != nil {
 			log.Printf("ensureTodayPhrase: %v", err)
 		}
-		topUpPhrasePoolIfLow(ctx)
+		ensureFreshContent(ctx, email, trackCategory(body.Track), body.Count)
 
 		sessionID, qs, err := startQuizSession(ctx, email, body.Track, body.Count)
 		if err != nil {
@@ -611,6 +741,34 @@ func registerQuizRoutes(r *gin.Engine) {
 			"answered_count": answered,
 			"correct_count":  correct,
 		})
+	})
+
+	r.GET("/api/quiz/sessions", func(c *gin.Context) {
+		email, ok := requireEmail(c)
+		if !ok {
+			return
+		}
+		sessions, err := getQuizSessions(c.Request.Context(), email, 20)
+		if err != nil {
+			log.Printf("getQuizSessions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "sessions unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"sessions": sessions})
+	})
+
+	r.GET("/api/quiz/session/:id/review", func(c *gin.Context) {
+		email, ok := requireEmail(c)
+		if !ok {
+			return
+		}
+		items, err := getSessionReview(c.Request.Context(), email, c.Param("id"))
+		if err != nil {
+			log.Printf("getSessionReview: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "review unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"items": items})
 	})
 
 	r.GET("/api/quiz/history", func(c *gin.Context) {

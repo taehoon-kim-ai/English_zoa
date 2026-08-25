@@ -128,7 +128,7 @@ function WordOrderQuestion({ q, constructed, answer, onTap, onRemove, onSubmit }
   );
 }
 
-function QuizSession({ track, count, onCorrectCountChange, showToast, onRestart }) {
+function QuizSession({ track, count, onCorrectCountChange, showToast, onRestart, onReview }) {
   const [state, setState] = useStateQuiz(null);
   const [error, setError] = useStateQuiz('');
   const [answer, setAnswer] = useStateQuiz(null);
@@ -207,7 +207,21 @@ function QuizSession({ track, count, onCorrectCountChange, showToast, onRestart 
             {perfect ? 'Perfect score!' : `You finished all ${state.total} questions!`}
           </div>
           <div className="quiz-complete-sub">{state.correct_count}/{state.total} correct</div>
-          <button className="duo-btn" onClick={onRestart}>Take Another Quiz</button>
+          <div className="quiz-complete-actions">
+            <button
+              className="duo-btn blue"
+              onClick={() => onReview({
+                session_id: state.session_id,
+                track: track.key,
+                started_at: 'just now',
+                total: state.total,
+                correct: state.correct_count,
+              })}
+            >
+              Review Answers
+            </button>
+            <button className="duo-btn" onClick={onRestart}>Take Another Quiz</button>
+          </div>
         </div>
       </div>
     );
@@ -222,7 +236,12 @@ function QuizSession({ track, count, onCorrectCountChange, showToast, onRestart 
         <span className="quiz-badge category">{q.category === 'vocabulary' ? 'Vocabulary' : 'Expression'}</span>
         <span className="quiz-badge type">{q.question_type === 'multiple_choice' ? 'Multiple Choice' : 'Word Order'}</span>
       </div>
-      <div className="card quiz-question">{q.prompt}</div>
+      <div className="card quiz-question">
+        {q.prompt}
+        {q.question_type === 'multiple_choice' && (
+          <button className="tts-btn" onClick={() => speakEnglish(q.prompt)} title="Listen">🔊</button>
+        )}
+      </div>
 
       {q.question_type === 'multiple_choice' ? (
         <MultipleChoiceQuestion q={q} answer={answer} onChoose={choose} />
@@ -299,19 +318,96 @@ function QuizHistoryPanel({ streak }) {
   );
 }
 
+// Past sessions list (quiz.go /api/quiz/sessions) — click one to review it.
+function PastQuizzesPanel({ onReview, refreshKey }) {
+  const [sessions, setSessions] = useStateQuiz(null);
+
+  useEffectQuiz(() => {
+    api('/api/quiz/sessions').then((data) => setSessions(data.sessions || [])).catch(() => setSessions([]));
+  }, [refreshKey]);
+
+  if (!sessions || sessions.length === 0) return null;
+
+  return (
+    <div className="card">
+      <div className="mini-lb-title">📝 Past Quizzes</div>
+      {sessions.map((s) => (
+        <button key={s.session_id} className="session-row" onClick={() => onReview(s)}>
+          <span className="session-track">{s.track === 'vocab' ? '🔤' : '💬'}</span>
+          <span className="session-date">{s.started_at.slice(5, 16)}</span>
+          <span className="session-score">{s.correct}/{s.total}</span>
+          <span className="session-arrow">›</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Read-only review of one past session: your answer vs the correct answer
+// per question. Correct answers only show for questions that were graded.
+function QuizReview({ session, onBack }) {
+  const [items, setItems] = useStateQuiz(null);
+
+  useEffectQuiz(() => {
+    api(`/api/quiz/session/${encodeURIComponent(session.session_id)}/review`)
+      .then((data) => setItems(data.items || []))
+      .catch(() => setItems([]));
+  }, [session]);
+
+  return (
+    <div className="quiz-wrap">
+      <div className="tagline">
+        {session.track === 'vocab' ? '🔤 Vocab Quiz' : '💬 Phrase Quiz'} · {session.started_at} · {session.correct}/{session.total}
+      </div>
+      {items === null && <div className="state-msg">Loading review...</div>}
+      {items && items.map((item) => (
+        <div key={item.seq} className={`card review-item ${item.result}`}>
+          <div className="review-head">
+            <span className="review-result">{item.result === 'correct' ? '✅' : item.result === 'incorrect' ? '❌' : '⏳'}</span>
+            <span className="review-prompt">{item.prompt}</span>
+            {/[A-Za-z]/.test(item.prompt) && (
+              <button className="tts-btn" onClick={() => speakEnglish(item.prompt)} title="Listen">🔊</button>
+            )}
+          </div>
+          {item.result !== '' && (
+            <div className="review-answers">
+              <div className="review-line correct-line">
+                <span className="review-label">Answer</span> {item.correct_text}
+                {/[A-Za-z]/.test(item.correct_text) && (
+                  <button className="tts-btn" onClick={() => speakEnglish(item.correct_text)} title="Listen">🔊</button>
+                )}
+              </div>
+              {item.your_text && item.your_text !== item.correct_text && (
+                <div className="review-line your-line">
+                  <span className="review-label">You said</span> {item.your_text}
+                </div>
+              )}
+            </div>
+          )}
+          {item.result === '' && <div className="review-answers"><div className="review-line">Not answered</div></div>}
+        </div>
+      ))}
+      <button className="duo-btn outline" onClick={onBack}>‹ Back</button>
+    </div>
+  );
+}
+
 function QuizView({ me, onCorrectCountChange, showToast }) {
-  const [stage, setStage] = useStateQuiz('track'); // 'track' | 'count' | 'quiz'
+  const [stage, setStage] = useStateQuiz('track'); // 'track' | 'count' | 'quiz' | 'review'
   const [track, setTrack] = useStateQuiz(null);
   const [count, setCount] = useStateQuiz(null);
-  const [runKey, setRunKey] = useStateQuiz(0); // bump to force a fresh QuizSession mount
+  const [reviewSession, setReviewSession] = useStateQuiz(null);
+  const [runKey, setRunKey] = useStateQuiz(0); // bump to force a fresh QuizSession mount + refresh the sessions list
 
   const pickTrack = (t) => { setTrack(t); setStage('count'); };
   const pickCount = (c) => { setCount(c); setStage('quiz'); setRunKey((k) => k + 1); };
-  const restart = () => { setStage('track'); setTrack(null); setCount(null); };
+  const restart = () => { setStage('track'); setTrack(null); setCount(null); setRunKey((k) => k + 1); };
+  const openReview = (s) => { setReviewSession(s); setStage('review'); };
 
   let content;
   if (stage === 'track') content = <TrackSelect onPick={pickTrack} />;
   else if (stage === 'count') content = <CountSelect track={track} onPick={pickCount} onBack={() => setStage('track')} />;
+  else if (stage === 'review') content = <QuizReview session={reviewSession} onBack={restart} />;
   else content = (
     <QuizSession
       key={runKey}
@@ -320,6 +416,7 @@ function QuizView({ me, onCorrectCountChange, showToast }) {
       onCorrectCountChange={onCorrectCountChange}
       showToast={showToast}
       onRestart={restart}
+      onReview={openReview}
     />
   );
 
@@ -327,6 +424,7 @@ function QuizView({ me, onCorrectCountChange, showToast }) {
     <div className="quiz-page-grid">
       <div className="quiz-page-sidebar">
         <QuizHistoryPanel streak={me ? me.streak : 0} />
+        <PastQuizzesPanel onReview={openReview} refreshKey={runKey} />
       </div>
       <div className="quiz-page-main">{content}</div>
     </div>

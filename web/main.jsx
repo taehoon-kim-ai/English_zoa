@@ -219,6 +219,29 @@ function NewsCard() {
   );
 }
 
+// Word of the Day (phrase.go /api/wordofday) — one vocabulary item a day,
+// same for the whole team, with a free browser-TTS pronunciation button.
+function WordOfDayCard() {
+  const [word, setWord] = useStateMain(null);
+
+  useEffectMain(() => {
+    api('/api/wordofday').then(setWord).catch(() => {});
+  }, []);
+
+  if (!word) return null;
+
+  return (
+    <div className="card wod-card">
+      <div className="tagline" style={{ marginBottom: 8 }}>✨ Word of the Day</div>
+      <div className="wod-english">
+        {word.english_text}
+        <button className="tts-btn big" onClick={() => speakEnglish(word.english_text)} title="Listen">🔊</button>
+      </div>
+      <div className="wod-korean">{word.korean_text}</div>
+    </div>
+  );
+}
+
 function TeamPanel() {
   const [team, setTeam] = useStateMain(null);
 
@@ -286,6 +309,7 @@ function MainView({ me }) {
       </div>
       <div className="main-col-sidebar">
         <DailyGoalRing />
+        <WordOfDayCard />
         <TeamPanel />
         <MiniLeaderboard me={me} />
       </div>

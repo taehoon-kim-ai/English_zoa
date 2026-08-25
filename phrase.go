@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"log"
+	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -173,4 +176,48 @@ var fallbackPhrases = []struct{ En, Ko, Category string }{
 	{"roadmap", "로드맵, 계획", "vocabulary"},
 	{"budget overrun", "예산 초과", "vocabulary"},
 	{"attrition", "인력 이탈, 자연 감소", "vocabulary"},
+}
+
+// wordOfTheDay picks one vocabulary item deterministically by date — the
+// same word for the whole team all day, no state needed. Uses day-of-epoch
+// modulo the pool count, offset into a stable id ordering.
+func wordOfTheDay(ctx context.Context) (Phrase, error) {
+	var total int
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases WHERE category = 'vocabulary'`).Scan(&total); err != nil {
+		return Phrase{}, err
+	}
+	if total == 0 {
+		return Phrase{}, errors.New("no vocabulary yet")
+	}
+	days := int(time.Now().In(seoulTZ).Sub(time.Date(2026, 1, 1, 0, 0, 0, 0, seoulTZ)).Hours() / 24)
+	offset := days % total
+	if offset < 0 {
+		offset += total
+	}
+
+	var p Phrase
+	err := db.QueryRow(ctx, `
+		SELECT id, english_text, korean_text, category
+		FROM phraseup.phrases WHERE category = 'vocabulary'
+		ORDER BY id OFFSET $1 LIMIT 1
+	`, offset).Scan(&p.ID, &p.EnglishText, &p.KoreanText, &p.Category)
+	return p, err
+}
+
+func registerPhraseRoutes(r *gin.Engine) {
+	r.GET("/api/wordofday", func(c *gin.Context) {
+		if _, ok := requireEmail(c); !ok {
+			return
+		}
+		ctx := c.Request.Context()
+		if err := seedStaticPhrasesIfMissing(ctx); err != nil {
+			log.Printf("seedStaticPhrasesIfMissing: %v", err)
+		}
+		word, err := wordOfTheDay(ctx)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "word of the day unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, word)
+	})
 }

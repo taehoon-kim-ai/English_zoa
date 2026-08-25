@@ -31,7 +31,6 @@ const (
 	anthropicAPIKeySecretName  = "phraseup-anthropic-api-key"
 	anthropicAPIKeyCacheMaxAge = 10 * time.Minute
 	aiGenerationBatchSize      = 20
-	aiPoolLowWatermark         = 15 // top up whenever fewer than this many phrases exist
 )
 
 var (
@@ -88,10 +87,12 @@ type generatedPhrase struct {
 var reJSONArray = regexp.MustCompile(`(?s)\[.*\]`)
 
 // generateBusinessEnglishBatch asks Claude for a batch of business-English
-// vocabulary + expression items. Returns (nil, nil) — not an error — when no
-// API key is configured, so callers can treat "no AI" as a normal, expected
-// state rather than a failure.
-func generateBusinessEnglishBatch(ctx context.Context, count int) ([]generatedPhrase, error) {
+// items of ONE category ("vocabulary" or "expression"), avoiding the items
+// listed in `avoid` (a sample of what's already in the pool, so refills add
+// genuinely new content instead of re-generating classics). Returns
+// (nil, nil) — not an error — when no API key is configured, so callers can
+// treat "no AI" as a normal, expected state rather than a failure.
+func generateBusinessEnglishBatch(ctx context.Context, category string, count int, avoid []string) ([]generatedPhrase, error) {
 	key := anthropicAPIKey(ctx)
 	if key == "" {
 		return nil, nil
@@ -99,15 +100,23 @@ func generateBusinessEnglishBatch(ctx context.Context, count int) ([]generatedPh
 
 	client := anthropic.NewClient(option.WithAPIKey(key))
 
-	prompt := fmt.Sprintf(`Generate exactly %d items for a workplace/business English learning app aimed at Korean professionals.
+	kind := `"expression": full workplace sentences (e.g. "Let's circle back on this next week.")`
+	if category == "vocabulary" {
+		kind = `"vocabulary": single business terms or short collocations (e.g. "stakeholder", "touch base")`
+	}
+	avoidClause := ""
+	if len(avoid) > 0 {
+		avoidClause = "\n\nDo NOT generate any of these (already in the app):\n- " + strings.Join(avoid, "\n- ")
+	}
 
-Mix roughly half "vocabulary" (a single business term or short collocation, e.g. "deadline", "touch base") and half
-"expression" (a full workplace sentence, e.g. "Let's circle back on this next week."). Every item needs a natural,
-accurate Korean translation. Avoid repeating extremely common items like "deadline", "circle back", or "touch base".
-Prefer varied real workplace situations: meetings, email, negotiation, project status, hiring, finance, sales.
+	prompt := fmt.Sprintf(`Generate exactly %d NEW items for a workplace/business English learning app aimed at Korean professionals.
+
+Every item must be of this one kind — %s. Every item needs a natural, accurate Korean translation.
+Prefer varied, less-common but genuinely useful real workplace situations: meetings, email, negotiation,
+project status, hiring, finance, sales, presentations, small talk with colleagues.%s
 
 Respond with ONLY a JSON array, no prose, no markdown code fences, in exactly this shape:
-[{"english": "...", "korean": "...", "category": "vocabulary"}, {"english": "...", "korean": "...", "category": "expression"}]`, count)
+[{"english": "...", "korean": "...", "category": %q}]`, count, kind, avoidClause, category)
 
 	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     "claude-opus-5",
@@ -138,26 +147,50 @@ Respond with ONLY a JSON array, no prose, no markdown code fences, in exactly th
 	return items, nil
 }
 
-// topUpPhrasePoolIfLow generates a fresh AI batch when the pool is running
-// low. Best-effort: logs and returns on any failure so callers (the daily
-// quiz build) never block on it.
-func topUpPhrasePoolIfLow(ctx context.Context) {
-	var total int
-	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM phraseup.phrases`).Scan(&total); err != nil {
-		log.Printf("ai: count phrases: %v", err)
+// ensureFreshContent generates a new batch for one category when this user
+// has fewer unseen phrases left in it than `need` — the moment repeats would
+// otherwise start appearing in their sessions. Runs synchronously inside
+// quiz-session creation (the frontend shows "Preparing your quiz..." during
+// the ~5-10s a generation takes) so the very session being started already
+// benefits. Best-effort: any failure just means this session pads with
+// repeats, exactly like before.
+func ensureFreshContent(ctx context.Context, email, category string, need int) {
+	var unseen int
+	if err := db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM phraseup.phrases p
+		WHERE p.category = $1 AND NOT EXISTS (
+			SELECT 1 FROM phraseup.quiz_questions q WHERE q.email = $2 AND q.phrase_id = p.id
+		)
+	`, category, email).Scan(&unseen); err != nil {
+		log.Printf("ai: count unseen: %v", err)
 		return
 	}
-	if total >= aiPoolLowWatermark {
+	if unseen >= need {
 		return
 	}
 
-	items, err := generateBusinessEnglishBatch(ctx, aiGenerationBatchSize)
+	// Give the model a sample of existing items so it steers away from them.
+	avoid := []string{}
+	rows, err := db.Query(ctx, `
+		SELECT english_text FROM phraseup.phrases WHERE category = $1 ORDER BY id DESC LIMIT 40
+	`, category)
+	if err == nil {
+		for rows.Next() {
+			var text string
+			if err := rows.Scan(&text); err == nil {
+				avoid = append(avoid, text)
+			}
+		}
+		rows.Close()
+	}
+
+	items, err := generateBusinessEnglishBatch(ctx, category, aiGenerationBatchSize, avoid)
 	if err != nil {
 		log.Printf("ai: generate batch: %v", err)
 		return
 	}
 	if len(items) == 0 {
-		return // no API key configured — fine, fallbackPhrases covers it
+		return // no API key configured — fine, sessions pad with repeats
 	}
 
 	inserted := 0
@@ -166,10 +199,6 @@ func topUpPhrasePoolIfLow(ctx context.Context) {
 		korean := strings.TrimSpace(item.Korean)
 		if english == "" || korean == "" {
 			continue
-		}
-		category := item.Category
-		if category != "vocabulary" && category != "expression" {
-			category = "expression"
 		}
 		tag, err := db.Exec(ctx, `
 			INSERT INTO phraseup.phrases (english_text, korean_text, category)
@@ -182,5 +211,5 @@ func topUpPhrasePoolIfLow(ctx context.Context) {
 		}
 		inserted += int(tag.RowsAffected())
 	}
-	log.Printf("ai: topped up phrase pool with %d generated items", inserted)
+	log.Printf("ai: generated %d new %s items (user had %d unseen, needed %d)", inserted, category, unseen, need)
 }
