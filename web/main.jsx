@@ -311,15 +311,118 @@ function MiniLeaderboard({ me }) {
   );
 }
 
+function WeeklyArenaCard({ weekly }) {
+  if (!weekly) return null;
+  const live = weekly.live || {};
+  const rows = (items, render) => (
+    (items || []).slice(0, 3).map((r, i) => (
+      <div key={r.nickname + i} className="mini-lb-row">
+        <span className="mini-lb-rank">{medal(i)}</span>
+        <span className="mini-lb-name">{r.nickname}</span>
+        <span className="mini-lb-value">{render(r)}</span>
+      </div>
+    ))
+  );
+  const empty = <div className="mini-lb-empty">No data yet</div>;
+  return (
+    <div className="card">
+      <div className="tagline">⚔️ Weekly Arena</div>
+      <div className="weekly-note">Resets every Friday 9:00 AM · champions crowned on Fridays</div>
+      <div className="mini-lb-section">
+        <div className="mini-lb-title">🎮 Battle Record</div>
+        {(live.battle || []).length ? rows(live.battle, (r) => `${r.wins}W–${r.losses}L`) : empty}
+      </div>
+      <div className="mini-lb-section">
+        <div className="mini-lb-title">🔥 Best Streak</div>
+        {(live.streak || []).length ? rows(live.streak, (r) => r.value) : empty}
+      </div>
+      <div className="mini-lb-section">
+        <div className="mini-lb-title">📚 Words Solved</div>
+        {(live.words || []).length ? rows(live.words, (r) => r.value) : empty}
+      </div>
+    </div>
+  );
+}
+
+// Full-screen Friday-morning celebration: shown once per user per week
+// (dismissal remembered in localStorage keyed by the celebrated week).
+function CelebrationOverlay({ celebration }) {
+  const [visible, setVisible] = useStateMain(false);
+
+  useEffectMain(() => {
+    if (!celebration) return;
+    try {
+      if (localStorage.getItem('phraseup-celebrated-' + celebration.week_of)) return;
+    } catch (e) { /* storage unavailable — still celebrate */ }
+    setVisible(true);
+  }, [celebration && celebration.week_of]);
+
+  if (!celebration || !visible) return null;
+
+  const dismiss = () => {
+    try { localStorage.setItem('phraseup-celebrated-' + celebration.week_of, '1'); } catch (e) {}
+    setVisible(false);
+  };
+
+  const c = celebration.champions || {};
+  const podium = [
+    c.battle && { icon: '🎮', title: 'Battle Champion', name: c.battle.nickname, detail: `${c.battle.wins}W–${c.battle.losses}L · ${Math.round((c.battle.win_rate || 0) * 100)}% win rate` },
+    c.streak && { icon: '🔥', title: 'Streak Champion', name: c.streak.nickname, detail: `${c.streak.value}-day streak` },
+    c.words && { icon: '📚', title: 'Word Champion', name: c.words.nickname, detail: `${c.words.value} words solved` },
+  ].filter(Boolean);
+
+  const pieces = Array.from({ length: 120 }, (_, i) => (
+    <span
+      key={i}
+      className="celebrate-confetti"
+      style={{
+        left: (i * 137.5) % 100 + '%',
+        animationDelay: (i % 20) * 0.15 + 's',
+        animationDuration: 2.5 + (i % 7) * 0.4 + 's',
+        background: ['#58cc02', '#1cb0f6', '#ff9600', '#ff4b4b', '#ce82ff', '#ffd900'][i % 6],
+      }}
+    />
+  ));
+
+  return (
+    <div className="celebrate-overlay" onClick={dismiss}>
+      {pieces}
+      <div className="celebrate-box" onClick={(e) => e.stopPropagation()}>
+        <div className="celebrate-title">🏆 Champions of the Week 🏆</div>
+        <div className="celebrate-week">Week of {celebration.week_of}</div>
+        <div className="celebrate-podium">
+          {podium.map((p) => (
+            <div key={p.title} className="celebrate-champ">
+              <div className="celebrate-champ-icon">{p.icon}</div>
+              <div className="celebrate-champ-title">{p.title}</div>
+              <div className="celebrate-champ-name">{p.name}</div>
+              <div className="celebrate-champ-detail">{p.detail}</div>
+            </div>
+          ))}
+        </div>
+        <button className="duo-btn" onClick={dismiss}>Awesome! 🎉</button>
+      </div>
+    </div>
+  );
+}
+
 function MainView({ me }) {
+  const [weekly, setWeekly] = useStateMain(null);
+
+  useEffectMain(() => {
+    api('/api/weekly').then(setWeekly).catch(() => {});
+  }, []);
+
   return (
     <div className="main-grid">
+      <CelebrationOverlay celebration={weekly && weekly.celebration} />
       <div className="main-col-primary">
         <TedTalkCard />
         <NewsCard />
       </div>
       <div className="main-col-sidebar">
         <DailyGoalRing />
+        <WeeklyArenaCard weekly={weekly} />
         <TeamPanel />
         <MiniLeaderboard me={me} />
       </div>

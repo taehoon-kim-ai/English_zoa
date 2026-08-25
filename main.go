@@ -84,6 +84,7 @@ func main() {
 	registerNewsRoutes(r)
 	registerStatsRoutes(r)
 	registerBattleRoutes(r)
+	registerWeeklyRoutes(r)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
