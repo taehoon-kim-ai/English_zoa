@@ -12,6 +12,11 @@
 `PhraseUp`/`phraseup`으로 전면 변경함 — Cloud Run 서비스·서비스 계정·DB 스키마
 모두 새 이름으로 새로 등록. **예전 `english-zoa` 서비스의 데이터(유저/퀴즈 기록)는
 새 서비스 계정에 자동으로 넘어오지 않아 리셋됨** (사용자가 리스크를 인지하고 승인).
+Go 모듈 경로도 `github.com/taehoon-kim-ai/phraseup`으로 변경 완료. GitHub 리포
+이름 변경(`English_zoa` → `phraseup`)만 남음 — 리포 admin 권한이 소유자에게만
+있어 태훈이 `gh repo rename phraseup` 실행 필요 (GitHub이 구 URL 리다이렉트를
+유지하므로 기존 clone은 계속 동작; 이후 각자
+`git remote set-url origin https://github.com/taehoon-kim-ai/phraseup.git`).
 
 ## 화면 구성
 

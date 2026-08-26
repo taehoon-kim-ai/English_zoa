@@ -43,44 +43,7 @@ import (
 // opaque tokens rather than their real position, so "sort the ids" isn't a
 // shortcut. The actual answer key lives server-side in `correct_answer`.
 
-var quizSchemaStmts = []string{
-	// quiz_attempts belonged to the old "infinite pool, one-shot per phrase"
-	// design; the first quiz_questions shape (date-based, single fixed daily
-	// set) is superseded by the session-based one below. Both migrations are
-	// one-time and guarded so a normal deploy never re-runs them.
-	`DROP TABLE IF EXISTS phraseup.quiz_attempts`,
-	`DO $$ BEGIN
-		IF EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_schema = 'phraseup' AND table_name = 'quiz_questions' AND column_name = 'quiz_date'
-		) THEN
-			DROP TABLE phraseup.quiz_questions;
-		END IF;
-	END $$`,
-	`CREATE TABLE IF NOT EXISTS phraseup.quiz_questions (
-		id             SERIAL PRIMARY KEY,
-		email          TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
-		session_id     TEXT NOT NULL,
-		track          TEXT NOT NULL CHECK (track IN ('vocab', 'phrase')),
-		seq            SMALLINT NOT NULL,
-		phrase_id      INT NOT NULL REFERENCES phraseup.phrases(id) ON DELETE CASCADE,
-		category       TEXT NOT NULL,
-		question_type  TEXT NOT NULL CHECK (question_type IN ('multiple_choice', 'word_order')),
-		prompt         TEXT NOT NULL,
-		options        JSONB NOT NULL,
-		correct_answer JSONB NOT NULL,
-		user_answer    JSONB,
-		result         TEXT CHECK (result IN ('correct', 'incorrect')),
-		answered_at    TIMESTAMPTZ,
-		created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		UNIQUE (email, session_id, seq)
-	)`,
-	`ALTER TABLE phraseup.quiz_questions ADD COLUMN IF NOT EXISTS user_answer JSONB`,
-	// 'review' sessions (mistake practice) reuse the same table with a third
-	// track value — widen the CHECK constraint that predates it.
-	`ALTER TABLE phraseup.quiz_questions DROP CONSTRAINT IF EXISTS quiz_questions_track_check`,
-	`ALTER TABLE phraseup.quiz_questions ADD CONSTRAINT quiz_questions_track_check CHECK (track IN ('vocab', 'phrase', 'review'))`,
-}
+// Table DDL for quiz_questions lives in migrations.go.
 
 const (
 	trackVocab  = "vocab"
@@ -211,6 +174,7 @@ func buildMultipleChoiceQuestion(ctx context.Context, phraseID int, category, en
 		var id int
 		var ko string
 		if err := rows.Scan(&id, &ko); err != nil {
+			warnScan("quiz distractors", err)
 			continue
 		}
 		options = append(options, QuizOption{ID: strconv.Itoa(id), KoreanText: ko})
@@ -289,6 +253,7 @@ func pickSessionPhraseIDs(ctx context.Context, email, category string, sources [
 	for rows.Next() {
 		var id int
 		if err := rows.Scan(&id); err != nil {
+			warnScan("quiz phrase pick", err)
 			continue
 		}
 		ids = append(ids, id)
@@ -311,6 +276,7 @@ func pickSessionPhraseIDs(ctx context.Context, email, category string, sources [
 	for padRows.Next() {
 		var id int
 		if err := padRows.Scan(&id); err != nil {
+			warnScan("quiz phrase pad", err)
 			continue
 		}
 		ids = append(ids, id)
@@ -341,6 +307,7 @@ func pickMistakePhraseIDs(ctx context.Context, email string, limit int) ([]int, 
 	for rows.Next() {
 		var id int
 		if err := rows.Scan(&id); err != nil {
+			warnScan("quiz mistakes", err)
 			continue
 		}
 		ids = append(ids, id)
@@ -365,6 +332,7 @@ func loadSession(ctx context.Context, email, sessionID string) ([]DailyQuizQuest
 		var q DailyQuizQuestion
 		var optionsRaw []byte
 		if err := rows.Scan(&q.ID, &q.Seq, &q.Category, &q.QuestionType, &q.Prompt, &optionsRaw, &q.Result); err != nil {
+			warnScan("quiz session", err)
 			continue
 		}
 		if err := json.Unmarshal(optionsRaw, &q.Options); err != nil {
@@ -506,6 +474,7 @@ func getQuizHistory(ctx context.Context, email string, days int) ([]QuizDayStat,
 		var track string
 		var attempted, correct int
 		if err := rows.Scan(&day, &track, &attempted, &correct); err != nil {
+			warnScan("quiz history", err)
 			continue
 		}
 		date := day.Format("2006-01-02")
@@ -562,6 +531,7 @@ func getQuizSessions(ctx context.Context, email string, limit int) ([]QuizSessio
 		var s QuizSessionSummary
 		var started time.Time
 		if err := rows.Scan(&s.SessionID, &s.Track, &started, &s.Total, &s.Answered, &s.Correct); err != nil {
+			warnScan("quiz sessions", err)
 			continue
 		}
 		s.StartedAt = started.In(seoulTZ).Format("2006-01-02 15:04")
@@ -627,6 +597,7 @@ func getSessionReview(ctx context.Context, email, sessionID string) ([]QuizRevie
 		var userRaw []byte
 		if err := rows.Scan(&item.Seq, &item.Category, &item.QuestionType, &item.Prompt,
 			&optionsRaw, &answerRaw, &item.Result, &userRaw); err != nil {
+			warnScan("quiz review", err)
 			continue
 		}
 		if item.Result != "" {

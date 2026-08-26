@@ -13,9 +13,15 @@
 <body>
   <div id="root"></div>
 
-  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+  <!-- Self-hosted (web/vendor/, embedded in the Go binary): pinned versions,
+       React production builds, no CDN dependency at runtime.
+       react/react-dom 18.3.1 (production.min), @babel/standalone 7.29.0.
+       ponytail: JSX is still transpiled in the browser on every page load
+       (~110 KB via Babel standalone) — acceptable for an internal tool;
+       the upgrade path is pre-transpiling with @babel/cli at deploy time. -->
+  <script src="vendor/react.production.min.js"></script>
+  <script src="vendor/react-dom.production.min.js"></script>
+  <script src="vendor/babel.min.js"></script>
 
   <script src="api.js"></script>
   <script type="text/babel" src="topbar.jsx"></script>

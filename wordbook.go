@@ -132,6 +132,7 @@ func registerWordbookRoutes(r *gin.Engine) {
 		for rows.Next() {
 			var w WordbookEntry
 			if err := rows.Scan(&w.English, &w.Korean, &w.IsNew); err != nil {
+				warnScan("wordbook", err)
 				continue
 			}
 			words = append(words, w)

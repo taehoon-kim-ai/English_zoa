@@ -19,10 +19,7 @@ import (
 
 // The old points system (user_scores) is gone — quiz "score" is now a plain
 // COUNT over quiz_questions and streak comes straight from login_events, so
-// this section owns no table, just a cleanup of the retired one.
-var scoreSchemaStmts = []string{
-	`DROP TABLE IF EXISTS phraseup.user_scores`,
-}
+// this section owns no table (the retired one is dropped in migrations.go).
 
 func getQuizCorrectCount(ctx context.Context, email string) (int, error) {
 	var count int
@@ -56,6 +53,7 @@ func getQuizLeaderboard(ctx context.Context, limit int) ([]QuizLeaderboardEntry,
 	for rows.Next() {
 		var e QuizLeaderboardEntry
 		if err := rows.Scan(&e.Email, &e.Nickname, &e.CorrectCount); err != nil {
+			warnScan("quiz leaderboard", err)
 			continue
 		}
 		entries = append(entries, e)
@@ -95,6 +93,7 @@ func getStreakLeaderboard(ctx context.Context, limit int) ([]StreakLeaderboardEn
 	for rows.Next() {
 		var e StreakLeaderboardEntry
 		if err := rows.Scan(&e.Email, &e.Nickname, &e.BestStreak); err != nil {
+			warnScan("streak leaderboard", err)
 			continue
 		}
 		entries = append(entries, e)
@@ -187,6 +186,7 @@ func getBattleStandings(ctx context.Context, from, to time.Time, limit int) ([]B
 	for rows.Next() {
 		var r BattleRecord
 		if err := rows.Scan(&r.Nickname, &r.Wins, &r.Losses); err != nil {
+			warnScan("battle record", err)
 			continue
 		}
 		if r.Wins+r.Losses > 0 {
@@ -217,6 +217,7 @@ func getWeeklyStreakTop(ctx context.Context, from, to time.Time, limit int) ([]W
 	for rows.Next() {
 		var e WeeklyEntry
 		if err := rows.Scan(&e.Nickname, &e.Value); err != nil {
+			warnScan("weekly streaks", err)
 			continue
 		}
 		entries = append(entries, e)
@@ -239,6 +240,7 @@ func getWeeklyWordsTop(ctx context.Context, from, to time.Time, limit int) ([]We
 	for rows.Next() {
 		var e WeeklyEntry
 		if err := rows.Scan(&e.Nickname, &e.Value); err != nil {
+			warnScan("weekly words", err)
 			continue
 		}
 		entries = append(entries, e)

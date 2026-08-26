@@ -17,9 +17,7 @@ import (
 // schema). Scoring/leaderboard has no meaning without persistence, so unlike
 // a live-fetch dashboard we don't try to run without it (see main.go).
 //
-// Schema is assembled from each feature file's own *SchemaStmts slice
-// (profile.go, phrase.go, score.go, quiz.go) so a section's table definition
-// travels with the rest of that section's code — see initSchema below.
+// Schema lives in migrations.go as versioned, run-once migrations.
 var db *pgxpool.Pool
 
 // initDB connects to the shared experimental Postgres ("exp-db"), mirroring
@@ -84,30 +82,17 @@ func initDB(ctx context.Context) error {
 
 func dbAvailable() bool { return db != nil }
 
-// initSchema runs the shared schema-create statement, then each section's
-// own table statements in dependency order (profile's `users` table first,
-// since phrase/score/quiz tables reference it via foreign key).
+// initSchema ensures the phraseup schema exists (tolerating a missing
+// database-level CREATE privilege when it already does), then hands off to
+// the versioned migration runner (migrations.go).
 func initSchema(ctx context.Context) error {
-	stmts := []string{`CREATE SCHEMA IF NOT EXISTS phraseup`}
-	stmts = append(stmts, profileSchemaStmts...)
-	stmts = append(stmts, phraseSchemaStmts...)
-	stmts = append(stmts, scoreSchemaStmts...)
-	stmts = append(stmts, quizSchemaStmts...)
-	stmts = append(stmts, tedtalkSchemaStmts...)
-	stmts = append(stmts, translateSchemaStmts...)
-	stmts = append(stmts, newsSchemaStmts...)
-	stmts = append(stmts, battleSchemaStmts...)
-
-	for _, s := range stmts {
-		if _, err := db.Exec(ctx, s); err != nil {
-			if s == `CREATE SCHEMA IF NOT EXISTS phraseup` && canContinueSchemaCreate(err, schemaExists(ctx, "phraseup")) {
-				log.Println("DB schema phraseup exists; continuing without database CREATE privilege")
-				continue
-			}
+	if _, err := db.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS phraseup`); err != nil {
+		if !canContinueSchemaCreate(err, schemaExists(ctx, "phraseup")) {
 			return fmt.Errorf("schema init: %w", err)
 		}
+		log.Println("DB schema phraseup exists; continuing without database CREATE privilege")
 	}
-	return nil
+	return runMigrations(ctx)
 }
 
 func schemaExists(ctx context.Context, name string) bool {
