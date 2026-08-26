@@ -85,6 +85,8 @@ apps-platform app secret set ANTHROPIC_API_KEY "$(pbpaste)"
 | 개인 페이지 | `profile.go` | `web/profile.jsx` | `users`(+`last_active_at`), `login_events` |
 | 리더보드 (집계만, 화면은 main.jsx) | `score.go` | — | (테이블 없음 — `quiz_questions`/`login_events` 집계) |
 | 주간 아레나 + 금요일 챔피언 celebration | `score.go` (`/api/weekly`) | `main.jsx` (WeeklyArenaCard, CelebrationOverlay) | (테이블 없음 — `battles`/`quiz_questions`/`login_events` 집계, 주 단위: 금 09:00 KST 리셋) |
+| 워드 배틀 (팀 레이스 + 팀 테트리스) | `battle.go` | `web/battle.jsx` | `battles`, `battle_rounds`, `battle_players` |
+| Word of the Day (매일 새 단어 + 100단어 학습) | `wordbook.go` | `web/quiz.jsx` (WordbookView) | (테이블 없음 — `phrases` source='ai' 읽기/쓰기) |
 | 공통 | `main.go`(부트스트랩), `db.go`(연결) | `web/app.jsx`(셸/라우팅), `web/topbar.jsx`, `web/api.js` | — |
 
 각 섹션 파일이 자기 테이블의 `CREATE TABLE` 문(`*SchemaStmts`)과 `register*Routes(r)`를

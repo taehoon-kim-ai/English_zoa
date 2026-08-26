@@ -790,3 +790,176 @@ h1, h2, h3 { letter-spacing: -0.015em; }
 }
 .celebrate-champ-name { font-size: 22px; font-weight: 900; }
 .celebrate-champ-detail { font-size: 13px; color: var(--text-muted, #777); margin-top: 4px; }
+
+/* ── team lobby ── */
+.team-lobby-grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 18px;
+  align-items: stretch;
+  width: 100%;
+  margin-bottom: 16px;
+}
+.team-panel {
+  border: 2px solid var(--border, #e5e5e5);
+  border-radius: 16px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 180px;
+}
+.team-panel.left { border-color: #1cb0f6; background: rgba(28, 176, 246, 0.06); }
+.team-panel.right { border-color: #ff4b4b; background: rgba(255, 75, 75, 0.06); }
+.team-panel.mine { box-shadow: 0 0 0 3px rgba(88, 204, 2, 0.35); }
+.team-vs {
+  align-self: center;
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--text-muted, #777);
+}
+.team-name { font-size: 19px; font-weight: 900; }
+.team-name-input {
+  font-size: 18px;
+  font-weight: 800;
+  font-family: inherit;
+  border: 2px dashed var(--border, #ccc);
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: transparent;
+  width: 100%;
+}
+.team-players { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.team-player {
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.05);
+}
+.team-player.empty { color: var(--text-muted, #999); font-weight: 600; font-style: italic; background: none; }
+
+/* ── race timer + countdown + hints ── */
+.battle-timer { width: 100%; display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.battle-timer-bar {
+  flex: 1;
+  height: 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+.battle-timer-fill {
+  height: 100%;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #58cc02, #1cb0f6);
+  transition: width 0.25s linear;
+}
+.battle-timer-num { font-weight: 900; font-size: 17px; min-width: 58px; text-align: right; }
+.battle-timer-num.urgent { color: #ff4b4b; animation: battle-urgent 0.6s ease infinite alternate; }
+@keyframes battle-urgent { from { transform: scale(1); } to { transform: scale(1.15); } }
+.battle-countdown.big {
+  font-size: 96px;
+  font-weight: 900;
+  color: var(--green, #58cc02);
+  animation: countdown-pop 0.9s ease;
+}
+@keyframes countdown-pop {
+  0% { transform: scale(1.7); opacity: 0; }
+  30% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.9; }
+}
+.battle-countdown.start {
+  font-size: 64px;
+  font-weight: 900;
+  background: linear-gradient(90deg, #ff9600, #58cc02, #1cb0f6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: countdown-pop 0.7s ease;
+}
+.battle-countdown.small { font-size: 22px; font-weight: 800; color: var(--text-muted, #888); padding: 18px 0; }
+.battle-hint {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: #ff9600;
+  background: rgba(255, 150, 0, 0.1);
+  border-radius: 12px;
+  padding: 8px 16px;
+  margin: 4px 0 10px;
+}
+
+/* ── team tetris ── */
+.tetris-freeplay {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-weight: 900;
+  color: #fff;
+  background: rgba(88, 204, 2, 0.9);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 14px;
+}
+.tetris-gate-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.12);
+  font-weight: 900;
+  font-size: 13px;
+  margin-right: 6px;
+}
+.tetris-team-title { font-weight: 900; font-size: 15px; color: #1cb0f6; margin-top: 6px; }
+.tetris-team-title.right { color: #ff4b4b; }
+.tetris-stat.dead { opacity: 0.45; }
+
+/* ── wordbook ── */
+.wordbook-banner {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  border: 2px solid var(--green, #58cc02);
+  background: linear-gradient(90deg, rgba(88, 204, 2, 0.10), rgba(28, 176, 246, 0.08));
+  border-radius: 16px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.wordbook-banner:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0, 0, 0, 0.10); }
+.wordbook-banner-icon { font-size: 34px; }
+.wordbook-banner-text { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.wordbook-banner-text b { font-size: 18px; font-weight: 900; }
+.wordbook-banner-text span { font-size: 13px; color: var(--text-muted, #777); font-weight: 600; }
+.wordbook-banner-arrow { font-size: 26px; font-weight: 900; color: var(--text-muted, #999); }
+.wordbook-card { width: 100%; }
+.wordbook-row {
+  display: grid;
+  grid-template-columns: 34px 1fr 34px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--border, #eee);
+}
+.wordbook-row:last-child { border-bottom: none; }
+.wordbook-no { font-weight: 800; color: var(--text-muted, #aaa); font-size: 13px; }
+.wordbook-en { font-weight: 800; font-size: 16px; }
+.wordbook-ko { color: var(--text-muted, #555); font-weight: 600; }
+.wordbook-new {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: #fff;
+  background: #ff9600;
+  border-radius: 6px;
+  padding: 2px 6px;
+  vertical-align: 2px;
+}

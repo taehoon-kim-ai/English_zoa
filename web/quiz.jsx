@@ -44,9 +44,42 @@ const TRACKS = [
 ];
 
 const REVIEW_TRACK = { key: 'review', title: 'Mistake Review', icon: '🔁', desc: 'Retry what you got wrong', counts: [], source: 'core' };
-const BATTLE_TRACK = { key: 'battle', title: 'Word Battle', icon: '⚔️', desc: 'Live 1v1 — first to type it wins', counts: [] };
+const BATTLE_TRACK = { key: 'battle', title: 'Word Battle', icon: '⚔️', desc: 'Live team battles — races & tetris', counts: [] };
 
-function TrackSelect({ onPick, onBattle }) {
+// Word of the Day study list — 100 words (word — meaning), newest first,
+// with today's fresh AI drop tagged NEW. Pure study page, no grading.
+function WordbookView({ onBack }) {
+  const [words, setWords] = useStateQuiz(null);
+
+  useEffectQuiz(() => {
+    api('/api/wordbook').then((d) => setWords(d.words || [])).catch(() => setWords([]));
+  }, []);
+
+  return (
+    <div className="quiz-wrap">
+      <div className="tagline">📖 Word of the Day — Top 100</div>
+      <div className="card wordbook-card">
+        <div className="battle-sub">Fresh business vocabulary drops in every day — newest words first. Study up before you quiz!</div>
+        {!words && <div className="state-msg">Loading…</div>}
+        {words && words.length === 0 && <div className="state-msg">No words yet — take a quiz to seed the pool.</div>}
+        {words && words.map((w, i) => (
+          <div key={w.english} className="wordbook-row">
+            <span className="wordbook-no">{i + 1}</span>
+            <span className="wordbook-en">
+              {w.english}
+              {w.is_new && <span className="wordbook-new">NEW</span>}
+            </span>
+            <button className="tts-btn" title="Listen" onClick={() => speakEnglish(w.english)}>🔊</button>
+            <span className="wordbook-ko">{w.korean}</span>
+          </div>
+        ))}
+      </div>
+      <button className="duo-btn outline" onClick={onBack}>‹ Back</button>
+    </div>
+  );
+}
+
+function TrackSelect({ onPick, onBattle, onWordbook }) {
   const section = (label, source) => (
     <div className="track-section">
       <div className="track-section-label">{label}</div>
@@ -64,6 +97,14 @@ function TrackSelect({ onPick, onBattle }) {
   return (
     <div className="quiz-wrap">
       <div className="tagline">Business English · Choose a Quiz</div>
+      <button className="wordbook-banner" onClick={onWordbook}>
+        <span className="wordbook-banner-icon">📖</span>
+        <span className="wordbook-banner-text">
+          <b>Word of the Day</b>
+          <span>Study today's top 100 business words — new words drop in daily</span>
+        </span>
+        <span className="wordbook-banner-arrow">›</span>
+      </button>
       {section('Section 1 · Word Bank (Slack + curated + AI)', 'core')}
       {section('Section 2 · From TED Talks & Daily News', 'media')}
       <div className="track-section">
@@ -459,8 +500,9 @@ function QuizView({ me, onCorrectCountChange, showToast }) {
   const openReview = (s) => { setReviewSession(s); setStage('review'); };
 
   let content;
-  if (stage === 'track') content = <TrackSelect onPick={pickTrack} onBattle={() => setStage('battle')} />;
+  if (stage === 'track') content = <TrackSelect onPick={pickTrack} onBattle={() => setStage('battle')} onWordbook={() => setStage('wordbook')} />;
   else if (stage === 'battle') content = <BattleView onBack={restart} showToast={showToast} />;
+  else if (stage === 'wordbook') content = <WordbookView onBack={restart} />;
   else if (stage === 'count') content = <CountSelect track={track} onPick={pickCount} onBack={() => setStage('track')} />;
   else if (stage === 'review') content = <QuizReview session={reviewSession} onBack={restart} />;
   else content = (

@@ -153,13 +153,24 @@ type BattleRecord struct {
 func getBattleStandings(ctx context.Context, from, to time.Time, limit int) ([]BattleRecord, error) {
 	rows, err := db.Query(ctx, `
 		WITH results AS (
+			-- legacy 1v1 matches (winner_email set)
 			SELECT winner_email AS email, 1 AS win, 0 AS loss
 			FROM phraseup.battles
 			WHERE status = 'finished' AND finished_at >= $1 AND finished_at < $2 AND winner_email IS NOT NULL
 			UNION ALL
 			SELECT CASE WHEN winner_email = host_email THEN guest_email ELSE host_email END, 0, 1
 			FROM phraseup.battles
-			WHERE status = 'finished' AND finished_at >= $1 AND finished_at < $2 AND winner_email IS NOT NULL
+			WHERE status = 'finished' AND finished_at >= $1 AND finished_at < $2
+			  AND winner_email IS NOT NULL AND guest_email IS NOT NULL
+			UNION ALL
+			-- team matches (winner_team set; draws count for no one)
+			SELECT bp.email,
+			       CASE WHEN bp.team =  b.winner_team THEN 1 ELSE 0 END,
+			       CASE WHEN bp.team <> b.winner_team THEN 1 ELSE 0 END
+			FROM phraseup.battles b
+			JOIN phraseup.battle_players bp ON bp.battle_id = b.id
+			WHERE b.status = 'finished' AND b.finished_at >= $1 AND b.finished_at < $2
+			  AND b.winner_team IN ('left', 'right')
 		)
 		SELECT u.nickname, SUM(r.win), SUM(r.loss)
 		FROM results r JOIN phraseup.users u ON u.email = r.email

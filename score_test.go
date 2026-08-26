@@ -28,3 +28,19 @@ func TestWeekStart(t *testing.T) {
 		}
 	}
 }
+
+func TestBattleHint(t *testing.T) {
+	if got := battleHint("synergy", 0); got != "" {
+		t.Errorf("level 0 = %q, want empty", got)
+	}
+	if got := battleHint("synergy", 1); got != "s••••••" {
+		t.Errorf("level 1 = %q, want s••••••", got)
+	}
+	if got := battleHint("touch base", 2); got != "to••• ba••" {
+		t.Errorf("level 2 = %q, want to••• ba••", got)
+	}
+	// punctuation always shows; high level fully reveals
+	if got := battleHint("circle back.", 99); got != "circle back." {
+		t.Errorf("level 99 = %q, want full reveal", got)
+	}
+}
