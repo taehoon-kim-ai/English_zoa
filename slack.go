@@ -93,7 +93,7 @@ func getAsyncToken() (string, error) {
 	}
 	body, _ := json.Marshal(map[string]any{
 		"emails":      []string{slackSeedUserEmail()},
-		"user_scopes": []string{"channels:history", "channels:read"},
+		"user_scopes": []string{"channels:history", "channels:read", "users:read", "users:read.email"},
 	})
 	req, _ := http.NewRequest("POST", dataAPIURL+"/api/async-tokens", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+iamToken)

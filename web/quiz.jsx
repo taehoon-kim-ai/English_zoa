@@ -5,7 +5,7 @@ const { useState: useStateQuiz, useEffect: useEffectQuiz, useCallback: useCallba
 
 // Pure-CSS confetti burst for the completion screen — ~40 pieces with
 // randomized position/color/delay, generated once per mount.
-const CONFETTI_COLORS = ['#58cc02', '#1cb0f6', '#ffc800', '#ff4b4b', '#ce82ff', '#ff9600'];
+const CONFETTI_COLORS = ['#12B76A', '#006CFA', '#FDB022', '#F04438', '#7C4DFF', '#F79009'];
 
 function ConfettiBurst() {
   const pieces = React.useMemo(() =>
@@ -500,6 +500,13 @@ function QuizView({ me, onCorrectCountChange, showToast }) {
   const openReview = (s) => { setReviewSession(s); setStage('review'); };
 
   let content;
+  useEffectQuiz(() => {
+    const open = () => setStage('battle');
+    if (window.__phraseupOpenBattle) { window.__phraseupOpenBattle = false; open(); }
+    window.addEventListener('phraseup-open-battle', open);
+    return () => window.removeEventListener('phraseup-open-battle', open);
+  }, []);
+
   if (stage === 'track') content = <TrackSelect onPick={pickTrack} onBattle={() => setStage('battle')} onWordbook={() => setStage('wordbook')} />;
   else if (stage === 'battle') content = <BattleView onBack={restart} showToast={showToast} />;
   else if (stage === 'wordbook') content = <WordbookView onBack={restart} />;

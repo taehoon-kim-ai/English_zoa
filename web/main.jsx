@@ -267,7 +267,10 @@ function TeamPanel() {
       <div className="tagline">👥 Team</div>
       {team.map((m) => (
         <div key={m.email} className="team-row">
-          <span className={`presence-dot ${m.online ? 'online' : ''}`} title={m.online ? 'Online now' : 'Offline'} />
+          <span className="team-avatar-wrap">
+            {m.avatar_url ? <img className="player-avatar" src={m.avatar_url} alt="" /> : <span className="player-avatar fallback">{m.nickname.charAt(0).toUpperCase()}</span>}
+            <span className={`presence-dot on-avatar ${m.online ? 'online' : ''}`} title={m.online ? 'Online now' : 'Offline'} />
+          </span>
           <div className="team-info">
             <div className="team-name">{m.nickname}</div>
             {m.status_message && <div className="team-status">{m.status_message}</div>}
@@ -379,7 +382,7 @@ function CelebrationOverlay({ celebration }) {
         left: (i * 137.5) % 100 + '%',
         animationDelay: (i % 20) * 0.15 + 's',
         animationDuration: 2.5 + (i % 7) * 0.4 + 's',
-        background: ['#58cc02', '#1cb0f6', '#ff9600', '#ff4b4b', '#ce82ff', '#ffd900'][i % 6],
+        background: ['#12B76A', '#006CFA', '#F79009', '#F04438', '#7C4DFF', '#FDB022'][i % 6],
       }}
     />
   ));

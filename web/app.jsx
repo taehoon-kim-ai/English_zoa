@@ -26,6 +26,75 @@ function useToast() {
   return [show, node];
 }
 
+// ── notification center — global 4s poll for battle invites (any screen).
+// An invite renders as a card with Yes/No; accepting jumps to the battle
+// (QuizView listens for 'phraseup-open-battle'), declining notifies the
+// inviter. Responses to MY invites arrive as auto-dismissing toasts.
+function NotificationCenter({ showToast }) {
+  const [invites, setInvites] = useStateApp([]);
+  const [flash, setFlash] = useStateApp([]); // response toasts
+  const flashSeq = useRefApp(0);
+
+  useEffectApp(() => {
+    const poll = () => {
+      api('/api/notifications').then((d) => {
+        setInvites(d.invites || []);
+        (d.responses || []).forEach((r) => {
+          const id = ++flashSeq.current;
+          setFlash((f) => [...f, { id, ...r }]);
+          setTimeout(() => setFlash((f) => f.filter((x) => x.id !== id)), 6000);
+        });
+      }).catch(() => {});
+    };
+    poll();
+    const iv = setInterval(poll, 4000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const respond = async (inv, accept) => {
+    setInvites((list) => list.filter((i) => i.invite_id !== inv.invite_id));
+    try {
+      await api('/api/battle/invite/respond', { method: 'POST', body: { invite_id: inv.invite_id, accept } });
+      if (accept) {
+        window.__phraseupOpenBattle = true;
+        window.location.hash = '#quiz';
+        window.dispatchEvent(new CustomEvent('phraseup-open-battle'));
+      }
+    } catch (e) { showToast(e.message); }
+  };
+
+  const gameName = { word: 'Word Race', phrase: 'Phrase Race', tetris: 'Word Tetris' };
+
+  if (invites.length === 0 && flash.length === 0) return null;
+  return (
+    <div className="noti-stack">
+      {invites.map((inv) => (
+        <div key={inv.invite_id} className="noti-card">
+          {inv.from_avatar
+            ? <img className="noti-avatar" src={inv.from_avatar} alt="" />
+            : <span className="noti-avatar fallback">{(inv.from_name || '?').charAt(0).toUpperCase()}</span>}
+          <div className="noti-body">
+            <b>{inv.from_name}</b> invited you to <b>{gameName[inv.game_type] || inv.game_type}</b>!
+            <div className="noti-sub">Join the match?</div>
+          </div>
+          <div className="noti-actions">
+            <button className="duo-btn small" onClick={() => respond(inv, true)}>Yes, join</button>
+            <button className="duo-btn outline small" onClick={() => respond(inv, false)}>No thanks</button>
+          </div>
+        </div>
+      ))}
+      {flash.map((r) => (
+        <div key={r.id} className={`noti-card response ${r.accepted ? 'ok' : 'no'}`}>
+          <span className="noti-avatar fallback">{r.accepted ? '🎉' : '😢'}</span>
+          <div className="noti-body">
+            <b>{r.to_name}</b> {r.accepted ? 'joined your' : 'declined your'} <b>{gameName[r.game_type] || r.game_type}</b> invite
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function App() {
   const route = useHashRoute();
   const [me, setMe] = useStateApp(null);
@@ -54,6 +123,7 @@ function App() {
     <>
       <TopBar route={activeRoute} me={me} />
       <main className={isWide ? 'main-wide' : ''}>{view}</main>
+      <NotificationCenter showToast={showToast} />
       {toastNode}
     </>
   );

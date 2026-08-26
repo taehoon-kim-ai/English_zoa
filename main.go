@@ -155,6 +155,7 @@ func main() {
 	registerBattleRoutes(r)
 	registerWeeklyRoutes(r)
 	registerWordbookRoutes(r)
+	registerAvatarRoutes(r)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {

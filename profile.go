@@ -24,6 +24,7 @@ type Profile struct {
 	StatusMessage string `json:"status_message"`
 	GoalVocab     int    `json:"goal_vocab"`
 	GoalPhrase    int    `json:"goal_phrase"`
+	AvatarURL     string `json:"avatar_url"`
 }
 
 // clampGoal keeps a per-day question goal in a sane range.
@@ -58,8 +59,8 @@ func ensureUser(ctx context.Context, email string) error {
 func getUser(ctx context.Context, email string) (Profile, error) {
 	p := Profile{Email: email}
 	err := db.QueryRow(ctx, `
-		SELECT nickname, status_message, goal_vocab, goal_phrase FROM phraseup.users WHERE email = $1
-	`, email).Scan(&p.Nickname, &p.StatusMessage, &p.GoalVocab, &p.GoalPhrase)
+		SELECT nickname, status_message, goal_vocab, goal_phrase, avatar_url FROM phraseup.users WHERE email = $1
+	`, email).Scan(&p.Nickname, &p.StatusMessage, &p.GoalVocab, &p.GoalPhrase, &p.AvatarURL)
 	return p, err
 }
 
@@ -105,12 +106,13 @@ type TeamMember struct {
 	Email         string `json:"email"`
 	Nickname      string `json:"nickname"`
 	StatusMessage string `json:"status_message"`
+	AvatarURL     string `json:"avatar_url"`
 	Online        bool   `json:"online"`
 }
 
 func getTeam(ctx context.Context) ([]TeamMember, error) {
 	rows, err := db.Query(ctx, `
-		SELECT email, nickname, status_message,
+		SELECT email, nickname, status_message, avatar_url,
 		       (last_active_at IS NOT NULL AND last_active_at > NOW() - make_interval(secs => $1)) AS online
 		FROM phraseup.users
 		ORDER BY online DESC, nickname ASC
@@ -123,7 +125,7 @@ func getTeam(ctx context.Context) ([]TeamMember, error) {
 	members := []TeamMember{}
 	for rows.Next() {
 		var m TeamMember
-		if err := rows.Scan(&m.Email, &m.Nickname, &m.StatusMessage, &m.Online); err != nil {
+		if err := rows.Scan(&m.Email, &m.Nickname, &m.StatusMessage, &m.AvatarURL, &m.Online); err != nil {
 			warnScan("team members", err)
 			continue
 		}
@@ -221,6 +223,7 @@ func registerProfileRoutes(r *gin.Engine) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "profile unavailable"})
 			return
 		}
+		go ensureAvatar(email) // best-effort Slack photo backfill
 		streak, err := recordLogin(ctx, email, time.Now())
 		if err != nil {
 			log.Printf("recordLogin: %v", err)
@@ -243,6 +246,7 @@ func registerProfileRoutes(r *gin.Engine) {
 			"goal_phrase":    profile.GoalPhrase,
 			"streak":         streak,
 			"correct_count":  correctCount,
+			"avatar_url":     profile.AvatarURL,
 		})
 	})
 

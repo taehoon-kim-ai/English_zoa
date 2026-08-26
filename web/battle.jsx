@@ -58,7 +58,7 @@ const TET_SHAPES = {
   J: [[1, 0, 0], [1, 1, 1]],
   L: [[0, 0, 1], [1, 1, 1]],
 };
-const TET_COLORS = { I: '#1cb0f6', O: '#ffc800', T: '#ce82ff', S: '#58cc02', Z: '#ff4b4b', J: '#1899d6', L: '#ff9600', G: '#9aa0aa' };
+const TET_COLORS = { I: '#006CFA', O: '#FDB022', T: '#7C4DFF', S: '#12B76A', Z: '#F04438', J: '#0059D6', L: '#F79009', G: '#9aa0aa' };
 const TET_KEYS = Object.keys(TET_SHAPES);
 const TET_FREE_PLAY_MS = 5000; // one correct answer buys this much play time
 
@@ -303,6 +303,26 @@ function TetrisGame({ battleId, state, showToast }) {
 // ── team lobby (waiting room) ─────────────────────────────────────────────
 function TeamLobbyView({ state, battleId, showToast, onLeave }) {
   const [names, setNames] = useStateBattle({ left: null, right: null });
+  const [team, setTeam] = useStateBattle([]);
+  const [invited, setInvited] = useStateBattle({}); // email → true (optimistic)
+
+  useEffectBattle(() => {
+    api('/api/team').then((d) => setTeam(d.members || d || [])).catch(() => {});
+  }, []);
+
+  const invite = async (email) => {
+    setInvited((m) => ({ ...m, [email]: true }));
+    try {
+      await api('/api/battle/invite', { method: 'POST', body: { battle_id: battleId, email } });
+    } catch (e) {
+      setInvited((m) => ({ ...m, [email]: false }));
+      showToast(e.message);
+    }
+  };
+
+  const seated = new Set([...state.team_left.players, ...state.team_right.players].map((p) => p.nickname));
+  const invitedNames = new Set(state.invited_names || []);
+  const invitable = team.filter((m) => !seated.has(m.nickname));
 
   const saveName = async (side) => {
     const val = names[side];
@@ -343,7 +363,12 @@ function TeamLobbyView({ state, battleId, showToast, onLeave }) {
         <div className="team-name">{team.name}</div>
       )}
       <div className="team-players">
-        {team.players.map((p) => <div key={p.nickname} className="team-player">{p.nickname}</div>)}
+        {team.players.map((p) => (
+          <div key={p.nickname} className="team-player">
+            {p.avatar ? <img className="player-avatar" src={p.avatar} alt="" /> : <span className="player-avatar fallback">{p.nickname.charAt(0).toUpperCase()}</span>}
+            {p.nickname}
+          </div>
+        ))}
         {team.players.length === 0 && <div className="team-player empty">Waiting for players…</div>}
       </div>
       {state.my_team !== side && (
@@ -364,6 +389,24 @@ function TeamLobbyView({ state, battleId, showToast, onLeave }) {
           {teamPanel('right', state.team_right)}
         </div>
         {state.is_host && <div className="battle-sub">You're the host — name the teams, then hit Start</div>}
+        {invitable.length > 0 && (
+          <div className="invite-panel">
+            <div className="mini-lb-title">📨 Invite teammates</div>
+            {invitable.map((m) => {
+              const sent = invited[m.email] || invitedNames.has(m.nickname);
+              return (
+                <div key={m.email} className="invite-row">
+                  {m.avatar_url ? <img className="player-avatar" src={m.avatar_url} alt="" /> : <span className="player-avatar fallback">{m.nickname.charAt(0).toUpperCase()}</span>}
+                  <span className="invite-name">{m.nickname}</span>
+                  {m.online && <span className="invite-online">● online</span>}
+                  {sent
+                    ? <span className="invite-sent">Invited ✓</span>
+                    : <button className="duo-btn blue small" onClick={() => invite(m.email)}>Invite</button>}
+                </div>
+              );
+            })}
+          </div>
+        )}
         <div className="quiz-complete-actions">
           {state.is_host && (
             <button className="duo-btn" disabled={!canStart} onClick={start}>

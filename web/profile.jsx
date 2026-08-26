@@ -100,6 +100,7 @@ function ProfileView({ me, showToast }) {
   const [goalPhrase, setGoalPhrase] = useStateProfile(5);
   const [events, setEvents] = useStateProfile([]);
   const [loaded, setLoaded] = useStateProfile(false);
+  const [avatarUrl, setAvatarUrl] = useStateProfile('');
 
   useEffectProfile(() => {
     if (me) {
@@ -107,6 +108,7 @@ function ProfileView({ me, showToast }) {
       setStatusMessage(me.status_message);
       if (me.goal_vocab) setGoalVocab(me.goal_vocab);
       if (me.goal_phrase) setGoalPhrase(me.goal_phrase);
+      if (me.avatar_url) setAvatarUrl(me.avatar_url);
     }
   }, [me]);
 
@@ -137,9 +139,44 @@ function ProfileView({ me, showToast }) {
   const eventByDate = {};
   events.forEach((e) => { eventByDate[e.date] = e; });
 
+  // Resize a chosen photo to a small square data: URL (fits the 200KB cap).
+  const pickAvatar = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const img = new Image();
+    img.onload = async () => {
+      const size = 128;
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const cctx = canvas.getContext('2d');
+      const side = Math.min(img.width, img.height);
+      cctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      try {
+        await api('/api/profile/avatar', { method: 'POST', body: { avatar: dataUrl } });
+        setAvatarUrl(dataUrl);
+        showToast('Photo updated ✓');
+      } catch (err) { showToast(err.message); }
+    };
+    img.src = URL.createObjectURL(file);
+    e.target.value = '';
+  };
+
   return (
     <div>
       <div className="card">
+        <div className="profile-avatar-row">
+          {avatarUrl
+            ? <img className="profile-avatar" src={avatarUrl} alt="" />
+            : <span className="profile-avatar fallback">{(nickname || '?').charAt(0).toUpperCase()}</span>}
+          <div className="profile-avatar-meta">
+            <div className="profile-avatar-hint">Your photo syncs from Slack (Okta/Google) automatically — or set your own.</div>
+            <label className="duo-btn outline small profile-avatar-btn">
+              Change photo
+              <input type="file" accept="image/*" onChange={pickAvatar} style={{ display: 'none' }} />
+            </label>
+          </div>
+        </div>
         <div className="profile-field">
           <label>Nickname</label>
           <input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={24} />

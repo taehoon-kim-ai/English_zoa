@@ -424,6 +424,7 @@ func finishExpiredRace(ctx context.Context, battleID int) error {
 
 type BattlePlayer struct {
 	Nickname string `json:"nickname"`
+	Avatar   string `json:"avatar"`
 	Lines    int    `json:"lines"`
 	Dead     bool   `json:"dead"`
 }
@@ -462,6 +463,9 @@ type BattleState struct {
 	// tetris — no omitempty: zeros must serialize
 	MyPendingGarbage int  `json:"my_pending_garbage"`
 	IAmDead          bool `json:"i_am_dead"`
+
+	// waiting lobbies: who has a pending invite out
+	InvitedNames []string `json:"invited_names,omitempty"`
 }
 
 func getBattleState(ctx context.Context, battleID int, email string) (BattleState, error) {
@@ -504,7 +508,7 @@ func getBattleState(ctx context.Context, battleID int, email string) (BattleStat
 	left := &BattleTeam{Name: leftName, Score: leftScore, Players: []BattlePlayer{}}
 	right := &BattleTeam{Name: rightName, Score: rightScore, Players: []BattlePlayer{}}
 	rows, err := db.Query(ctx, `
-		SELECT bp.team, u.nickname, bp.email, bp.lines, bp.garbage, bp.dead
+		SELECT bp.team, u.nickname, u.avatar_url, bp.email, bp.lines, bp.garbage, bp.dead
 		FROM phraseup.battle_players bp
 		JOIN phraseup.users u ON u.email = bp.email
 		WHERE bp.battle_id = $1 ORDER BY bp.joined_at
@@ -513,14 +517,14 @@ func getBattleState(ctx context.Context, battleID int, email string) (BattleStat
 		return BattleState{}, err
 	}
 	for rows.Next() {
-		var team, nick, pEmail string
+		var team, nick, avatar, pEmail string
 		var lines, garbage int
 		var dead bool
-		if err := rows.Scan(&team, &nick, &pEmail, &lines, &garbage, &dead); err != nil {
+		if err := rows.Scan(&team, &nick, &avatar, &pEmail, &lines, &garbage, &dead); err != nil {
 			warnScan("battle players", err)
 			continue
 		}
-		p := BattlePlayer{Nickname: nick, Lines: lines, Dead: dead}
+		p := BattlePlayer{Nickname: nick, Avatar: avatar, Lines: lines, Dead: dead}
 		if team == "left" {
 			left.Players = append(left.Players, p)
 		} else {
@@ -553,6 +557,23 @@ func getBattleState(ctx context.Context, battleID int, email string) (BattleStat
 		s.WinnerTeamName = rightName
 	}
 	s.WinnerIsMe = (winnerTeam == "left" || winnerTeam == "right") && winnerTeam == s.MyTeam
+
+	if s.Status == "waiting" && s.MyTeam != "" {
+		irows, err := db.Query(ctx, `
+			SELECT u.nickname FROM phraseup.battle_invites i
+			JOIN phraseup.users u ON u.email = i.to_email
+			WHERE i.battle_id = $1 AND i.status = 'pending' ORDER BY i.created_at
+		`, battleID)
+		if err == nil {
+			for irows.Next() {
+				var nick string
+				if err := irows.Scan(&nick); err == nil {
+					s.InvitedNames = append(s.InvitedNames, nick)
+				}
+			}
+			irows.Close()
+		}
+	}
 
 	if s.Status == "active" {
 		if s.GameType != "tetris" && endsAt != nil {
@@ -727,6 +748,149 @@ func tetrisGateQuestion(ctx context.Context, battleID int) (gin.H, error) {
 	}, nil
 }
 
+// ── invites & notifications ────────────────────────────────────────────────
+// Players in an open lobby can invite teammates by email. Invitees see the
+// invite in a global notification poll (any screen), answer yes/no, and the
+// inviter gets the response back exactly once (seen_by_sender flips in the
+// same query that delivers it).
+
+// inviteToBattle creates/refreshes a pending invite. Only players already
+// seated in the (still waiting) battle can invite; you can't invite someone
+// who's already seated.
+func inviteToBattle(ctx context.Context, battleID int, from, to string) error {
+	if from == to {
+		return errors.New("that's you")
+	}
+	var status string
+	if err := db.QueryRow(ctx, `SELECT status FROM phraseup.battles WHERE id = $1`, battleID).Scan(&status); err != nil {
+		return errors.New("battle not found")
+	}
+	if status != "waiting" {
+		return errors.New("battle already started")
+	}
+	var seated bool
+	if err := db.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM phraseup.battle_players WHERE battle_id = $1 AND email = $2)
+	`, battleID, from).Scan(&seated); err != nil || !seated {
+		return errors.New("only players in the lobby can invite")
+	}
+	var exists bool
+	if err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM phraseup.users WHERE email = $1)`, to).Scan(&exists); err != nil || !exists {
+		return errors.New("that person hasn't visited PhraseUp yet")
+	}
+	if err := db.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM phraseup.battle_players WHERE battle_id = $1 AND email = $2)
+	`, battleID, to).Scan(&seated); err == nil && seated {
+		return errors.New("already in the lobby")
+	}
+	_, err := db.Exec(ctx, `
+		INSERT INTO phraseup.battle_invites (battle_id, from_email, to_email)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (battle_id, to_email) DO UPDATE
+			SET status = 'pending', from_email = $2, seen_by_sender = FALSE,
+			    created_at = NOW(), responded_at = NULL
+			WHERE phraseup.battle_invites.status <> 'pending'
+	`, battleID, from, to)
+	return err
+}
+
+// respondToInvite settles a pending invite. Accepting joins the battle (any
+// team — the invitee picks a side in the lobby); if the battle meanwhile
+// started or vanished, the invite is marked declined and the join error
+// surfaces to the invitee.
+func respondToInvite(ctx context.Context, inviteID int, email string, accept bool) (battleID int, err error) {
+	var status string
+	if err := db.QueryRow(ctx, `
+		SELECT battle_id, status FROM phraseup.battle_invites WHERE id = $1 AND to_email = $2
+	`, inviteID, email).Scan(&battleID, &status); err != nil {
+		return 0, errors.New("invite not found")
+	}
+	if status != "pending" {
+		return 0, errors.New("invite already answered")
+	}
+	newStatus := "declined"
+	if accept {
+		if joinErr := joinBattle(ctx, battleID, email, ""); joinErr != nil {
+			// Can't join any more — settle as declined so the inviter hears back.
+			_, _ = db.Exec(ctx, `
+				UPDATE phraseup.battle_invites SET status = 'declined', responded_at = NOW() WHERE id = $1
+			`, inviteID)
+			return 0, joinErr
+		}
+		newStatus = "accepted"
+	}
+	_, err = db.Exec(ctx, `
+		UPDATE phraseup.battle_invites SET status = $2, responded_at = NOW() WHERE id = $1
+	`, inviteID, newStatus)
+	return battleID, err
+}
+
+type InviteNotification struct {
+	InviteID   int    `json:"invite_id"`
+	BattleID   int    `json:"battle_id"`
+	GameType   string `json:"game_type"`
+	FromName   string `json:"from_name"`
+	FromAvatar string `json:"from_avatar"`
+}
+
+type InviteResponse struct {
+	ToName   string `json:"to_name"`
+	GameType string `json:"game_type"`
+	Accepted bool   `json:"accepted"`
+}
+
+// getNotifications returns (a) live invites addressed to me on battles still
+// in the lobby, and (b) responses to invites I sent, each delivered once.
+func getNotifications(ctx context.Context, email string) ([]InviteNotification, []InviteResponse, error) {
+	invites := []InviteNotification{}
+	rows, err := db.Query(ctx, `
+		SELECT i.id, i.battle_id, b.game_type, u.nickname, u.avatar_url
+		FROM phraseup.battle_invites i
+		JOIN phraseup.battles b ON b.id = i.battle_id
+		JOIN phraseup.users u ON u.email = i.from_email
+		WHERE i.to_email = $1 AND i.status = 'pending' AND b.status = 'waiting'
+		ORDER BY i.created_at DESC LIMIT 5
+	`, email)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		var n InviteNotification
+		if err := rows.Scan(&n.InviteID, &n.BattleID, &n.GameType, &n.FromName, &n.FromAvatar); err != nil {
+			warnScan("invites", err)
+			continue
+		}
+		invites = append(invites, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	responses := []InviteResponse{}
+	rows, err = db.Query(ctx, `
+		UPDATE phraseup.battle_invites i
+		SET seen_by_sender = TRUE
+		FROM phraseup.battles b, phraseup.users u
+		WHERE i.from_email = $1 AND i.status IN ('accepted', 'declined') AND NOT i.seen_by_sender
+		  AND b.id = i.battle_id AND u.email = i.to_email
+		RETURNING u.nickname, b.game_type, i.status = 'accepted'
+	`, email)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		var r InviteResponse
+		if err := rows.Scan(&r.ToName, &r.GameType, &r.Accepted); err != nil {
+			warnScan("invite responses", err)
+			continue
+		}
+		responses = append(responses, r)
+	}
+	rows.Close()
+	return invites, responses, rows.Err()
+}
+
 func registerBattleRoutes(r *gin.Engine) {
 	r.GET("/api/battle/lobby", func(c *gin.Context) {
 		email, ok := requireEmail(c)
@@ -875,6 +1039,62 @@ func registerBattleRoutes(r *gin.Engine) {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	r.POST("/api/battle/invite", func(c *gin.Context) {
+		email, ok := requireEmail(c)
+		if !ok {
+			return
+		}
+		var body struct {
+			BattleID int    `json:"battle_id"`
+			Email    string `json:"email"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		if err := inviteToBattle(c.Request.Context(), body.BattleID, email, strings.TrimSpace(body.Email)); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	r.POST("/api/battle/invite/respond", func(c *gin.Context) {
+		email, ok := requireEmail(c)
+		if !ok {
+			return
+		}
+		var body struct {
+			InviteID int  `json:"invite_id"`
+			Accept   bool `json:"accept"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		battleID, err := respondToInvite(c.Request.Context(), body.InviteID, email, body.Accept)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "battle_id": battleID})
+	})
+
+	// Global notification poll — battle invites for me + responses to mine.
+	r.GET("/api/notifications", func(c *gin.Context) {
+		email, ok := requireEmail(c)
+		if !ok {
+			return
+		}
+		invites, responses, err := getNotifications(c.Request.Context(), email)
+		if err != nil {
+			log.Printf("getNotifications: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "notifications unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"invites": invites, "responses": responses})
 	})
 
 	r.GET("/api/battle/:id/state", func(c *gin.Context) {

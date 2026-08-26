@@ -25,7 +25,7 @@ function TopBar({ route, me }) {
           </>
         )}
         <a href="#profile" className={`avatar-btn ${route === 'profile' ? 'active' : ''}`} title="Profile">
-          {initial}
+          {me && me.avatar_url ? <img src={me.avatar_url} alt="" /> : initial}
         </a>
       </div>
     </div>

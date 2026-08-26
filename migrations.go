@@ -214,6 +214,27 @@ var migrations = []migration{
 			PRIMARY KEY (email, usage_date)
 		)`,
 	}},
+	{5, "battle invites + user avatars", []string{
+		// battle.go — invites: one live invite per (battle, invitee).
+		// seen_by_sender delivers the accept/decline notification to the
+		// inviter exactly once (flipped in the same query that reads it).
+		`CREATE TABLE IF NOT EXISTS phraseup.battle_invites (
+			id             SERIAL PRIMARY KEY,
+			battle_id      INT  NOT NULL REFERENCES phraseup.battles(id) ON DELETE CASCADE,
+			from_email     TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
+			to_email       TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
+			status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'declined')),
+			seen_by_sender BOOL NOT NULL DEFAULT FALSE,
+			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			responded_at   TIMESTAMPTZ,
+			UNIQUE (battle_id, to_email)
+		)`,
+		// avatar.go — profile photo URL (Slack-synced, usually the person's
+		// Okta/Google photo) or an uploaded data: URL; checked_at throttles
+		// the Slack lookup to one attempt per day per user.
+		`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS avatar_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS avatar_checked_at TIMESTAMPTZ`,
+	}},
 }
 
 // migrationLockKey is an arbitrary app-wide advisory-lock id; it only has to
