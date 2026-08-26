@@ -66,6 +66,7 @@ func getDailyGoal(ctx context.Context, email string) (DailyGoal, error) {
 		var track string
 		var answered, correct int
 		if err := rows.Scan(&track, &answered, &correct); err != nil {
+			warnScan("badges", err)
 			continue
 		}
 		switch track {

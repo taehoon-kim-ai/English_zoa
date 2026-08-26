@@ -1,4 +1,4 @@
-module github.com/taehoon-kim-ai/English_zoa
+module github.com/taehoon-kim-ai/phraseup
 
 go 1.26.3
 

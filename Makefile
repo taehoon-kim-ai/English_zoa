@@ -1,4 +1,4 @@
-IMAGE ?= english-zoa:latest
+IMAGE ?= phraseup:latest
 PROJECT ?= experimental-apps-v2
 REGION ?= us-west1
 

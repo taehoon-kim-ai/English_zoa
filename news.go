@@ -29,19 +29,7 @@ import (
 
 const newsFeedURL = "https://feeds.bbci.co.uk/news/business/rss.xml"
 
-var newsSchemaStmts = []string{
-	`CREATE TABLE IF NOT EXISTS phraseup.daily_news (
-		news_date  DATE PRIMARY KEY,
-		title      TEXT NOT NULL,
-		summary    TEXT NOT NULL,
-		summary_ko TEXT NOT NULL DEFAULT '',
-		url        TEXT NOT NULL,
-		image_url  TEXT NOT NULL DEFAULT '',
-		source     TEXT NOT NULL DEFAULT 'BBC Business',
-		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`,
-	`ALTER TABLE phraseup.daily_news ADD COLUMN IF NOT EXISTS summary_ko TEXT NOT NULL DEFAULT ''`,
-}
+// Table DDL for daily_news lives in migrations.go.
 
 type NewsStory struct {
 	Date      string `json:"date"`
@@ -181,7 +169,7 @@ Respond with ONLY a JSON object, no prose, no markdown fences, in exactly this s
 {"summary_en": "...", "summary_ko": "...", "vocab": [{"english": "...", "korean": "...", "category": "vocabulary"}]}`, title, material)
 
 	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     "claude-haiku-4-5",
+		Model:     aiFastModel,
 		MaxTokens: 3800,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),

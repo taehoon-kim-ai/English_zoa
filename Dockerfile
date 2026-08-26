@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
-# Multi-stage build for English_zoa. No Node/npm stage: web/ is a no-build
+# Multi-stage build for PhraseUp. No Node/npm stage: web/ is a no-build
 # static prototype (React + Babel from CDN) embedded into the Go binary via
 # //go:embed, following the MADANG dashboard's pattern on the same platform.
 
-FROM golang:1.25-bookworm AS build
+FROM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

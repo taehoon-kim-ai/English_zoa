@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,69 +41,13 @@ import (
 //
 // Owns phraseup.battles + phraseup.battle_rounds + phraseup.battle_players.
 
-var battleSchemaStmts = []string{
-	// Pre-rounds battles schema is replaced wholesale (one-time, guarded).
-	`DO $$ BEGIN
-		IF EXISTS (
-			SELECT 1 FROM information_schema.tables
-			WHERE table_schema = 'phraseup' AND table_name = 'battles'
-		) AND NOT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_schema = 'phraseup' AND table_name = 'battles' AND column_name = 'game_type'
-		) THEN
-			DROP TABLE phraseup.battles;
-		END IF;
-	END $$`,
-	`CREATE TABLE IF NOT EXISTS phraseup.battles (
-		id            SERIAL PRIMARY KEY,
-		game_type     TEXT NOT NULL DEFAULT 'word' CHECK (game_type IN ('word', 'phrase', 'tetris')),
-		rounds_total  INT NOT NULL DEFAULT 10,
-		status        TEXT NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting', 'active', 'finished', 'cancelled')),
-		host_email    TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
-		guest_email   TEXT REFERENCES phraseup.users(email) ON DELETE CASCADE,
-		host_score    INT NOT NULL DEFAULT 0,
-		guest_score   INT NOT NULL DEFAULT 0,
-		host_garbage  INT NOT NULL DEFAULT 0,
-		guest_garbage INT NOT NULL DEFAULT 0,
-		host_lines    INT NOT NULL DEFAULT 0,
-		guest_lines   INT NOT NULL DEFAULT 0,
-		winner_email  TEXT,
-		created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		started_at    TIMESTAMPTZ,
-		finished_at   TIMESTAMPTZ
-	)`,
-	`CREATE TABLE IF NOT EXISTS phraseup.battle_rounds (
-		id           SERIAL PRIMARY KEY,
-		battle_id    INT NOT NULL REFERENCES phraseup.battles(id) ON DELETE CASCADE,
-		round_no     INT NOT NULL,
-		phrase_id    INT NOT NULL REFERENCES phraseup.phrases(id) ON DELETE CASCADE,
-		winner_email TEXT,
-		started_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		UNIQUE (battle_id, round_no)
-	)`,
-	// Team-race additions. Races reuse host_score/guest_score as the
-	// LEFT/RIGHT team scores; winner_email stays NULL for team matches and
-	// winner_team ('left' | 'right' | 'draw') carries the result instead.
-	`ALTER TABLE phraseup.battles ADD COLUMN IF NOT EXISTS team_left_name  TEXT NOT NULL DEFAULT 'Team Blue'`,
-	`ALTER TABLE phraseup.battles ADD COLUMN IF NOT EXISTS team_right_name TEXT NOT NULL DEFAULT 'Team Red'`,
-	`ALTER TABLE phraseup.battles ADD COLUMN IF NOT EXISTS winner_team TEXT`,
-	`ALTER TABLE phraseup.battles ADD COLUMN IF NOT EXISTS duration_seconds INT NOT NULL DEFAULT 60`,
-	`ALTER TABLE phraseup.battles ADD COLUMN IF NOT EXISTS ends_at TIMESTAMPTZ`,
-	`CREATE TABLE IF NOT EXISTS phraseup.battle_players (
-		battle_id INT  NOT NULL REFERENCES phraseup.battles(id) ON DELETE CASCADE,
-		email     TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
-		team      TEXT NOT NULL CHECK (team IN ('left', 'right')),
-		joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		PRIMARY KEY (battle_id, email)
-	)`,
-	// Per-player wrong-attempt hint levels for the current round: {email: level}.
-	`ALTER TABLE phraseup.battle_rounds ADD COLUMN IF NOT EXISTS hints JSONB NOT NULL DEFAULT '{}'`,
-	// Per-player tetris state (team tetris): line totals, pending garbage,
-	// and elimination. A team loses when every member is dead.
-	`ALTER TABLE phraseup.battle_players ADD COLUMN IF NOT EXISTS lines   INT  NOT NULL DEFAULT 0`,
-	`ALTER TABLE phraseup.battle_players ADD COLUMN IF NOT EXISTS garbage INT  NOT NULL DEFAULT 0`,
-	`ALTER TABLE phraseup.battle_players ADD COLUMN IF NOT EXISTS dead    BOOL NOT NULL DEFAULT FALSE`,
-}
+// Table DDL for battles + battle_rounds + battle_players lives in
+// migrations.go. Races reuse host_score/guest_score as the LEFT/RIGHT team
+// scores; winner_email stays NULL for team matches and winner_team
+// ('left' | 'right' | 'draw') carries the result instead. battle_rounds.hints
+// holds per-player wrong-attempt hint levels for the current round
+// ({email: level}); battle_players carries per-player tetris state (line
+// totals, pending garbage, elimination — a team loses when all are dead).
 
 const (
 	battleMatchCountdownSec = 3    // the 3‥2‥1‥START! before round 1
@@ -112,9 +57,17 @@ const (
 )
 
 // battleHMACKey signs the tetris word-gate tokens so grading stays
-// stateless across instances. A fixed app-level key is fine here — the
-// only thing it protects is a party-game shortcut.
-var battleHMACKey = []byte("phraseup-battle-gate-v1")
+// stateless across instances. BATTLE_HMAC_KEY overrides it when set.
+// ponytail: the compiled-in fallback is deliberate — it only protects a
+// party-game shortcut, and a fixed key keeps all instances in agreement
+// with zero config. If the stakes ever rise, move it to Secret Manager
+// like ANTHROPIC_API_KEY (ai.go).
+var battleHMACKey = func() []byte {
+	if k := os.Getenv("BATTLE_HMAC_KEY"); k != "" {
+		return []byte(k)
+	}
+	return []byte("phraseup-battle-gate-v1")
+}()
 
 var reBattleNormalize = regexp.MustCompile(`[^a-z0-9 ]`)
 
@@ -258,6 +211,7 @@ func getBattleLobby(ctx context.Context, email string) (entries []BattleLobbyEnt
 		var e BattleLobbyEntry
 		var created time.Time
 		if err := rows.Scan(&e.ID, &e.GameType, &e.HostName, &e.GuestName, &e.PlayerCount, &e.Status, &e.IsMine, &created); err != nil {
+			warnScan("battle lobby", err)
 			continue
 		}
 		e.CreatedAt = created.In(seoulTZ).Format("15:04")
@@ -563,6 +517,7 @@ func getBattleState(ctx context.Context, battleID int, email string) (BattleStat
 		var lines, garbage int
 		var dead bool
 		if err := rows.Scan(&team, &nick, &pEmail, &lines, &garbage, &dead); err != nil {
+			warnScan("battle players", err)
 			continue
 		}
 		p := BattlePlayer{Nickname: nick, Lines: lines, Dead: dead}
@@ -752,6 +707,7 @@ func tetrisGateQuestion(ctx context.Context, battleID int) (gin.H, error) {
 	for rows.Next() {
 		var en, ko string
 		if err := rows.Scan(&en, &ko); err != nil {
+			warnScan("battle phrases", err)
 			continue
 		}
 		options = append(options, opt{English: en})

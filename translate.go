@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -32,16 +33,7 @@ import (
 //   - The frontend only calls on an explicit action (button/Enter), never
 //     automatically while typing (translate.jsx).
 
-var translateSchemaStmts = []string{
-	`CREATE TABLE IF NOT EXISTS phraseup.translation_cache (
-		input_hash       TEXT PRIMARY KEY,
-		input_text       TEXT NOT NULL,
-		detected_lang    TEXT NOT NULL,
-		translation      TEXT NOT NULL,
-		business_version TEXT NOT NULL,
-		created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`,
-}
+// Table DDL for translation_cache lives in migrations.go.
 
 type translateResult struct {
 	DetectedLang    string `json:"detected_lang"`
@@ -89,10 +81,39 @@ func saveTranslationCache(ctx context.Context, hash, text string, r translateRes
 	}
 }
 
-func translateText(ctx context.Context, text string) (translateResult, error) {
+// translateDailyCap bounds each user's Claude calls per (Seoul) day —
+// team-wide cache hits are free and don't count. Postgres-backed counter
+// (phraseup.translate_usage) so the cap holds across Cloud Run instances.
+const translateDailyCap = 50
+
+var errTranslateCapped = errors.New("daily translation limit reached — try again tomorrow")
+
+// bumpTranslateUsage counts one API-bound call and reports whether the user
+// is still under the cap. Counting before the call (not after success) means
+// a failing API can't be hammered either.
+func bumpTranslateUsage(ctx context.Context, email string) error {
+	var calls int
+	err := db.QueryRow(ctx, `
+		INSERT INTO phraseup.translate_usage (email, usage_date, calls) VALUES ($1, $2, 1)
+		ON CONFLICT (email, usage_date) DO UPDATE SET calls = translate_usage.calls + 1
+		RETURNING calls
+	`, email, time.Now().In(seoulTZ).Format("2006-01-02")).Scan(&calls)
+	if err != nil {
+		return err
+	}
+	if calls > translateDailyCap {
+		return errTranslateCapped
+	}
+	return nil
+}
+
+func translateText(ctx context.Context, email, text string) (translateResult, error) {
 	hash := translateInputHash(text)
 	if cached, ok := lookupTranslationCache(ctx, hash); ok {
 		return cached, nil
+	}
+	if err := bumpTranslateUsage(ctx, email); err != nil {
+		return translateResult{}, err
 	}
 
 	key := anthropicAPIKey(ctx)
@@ -116,9 +137,10 @@ Input text: %q
 Respond with ONLY a JSON object, no prose, no markdown fences, in exactly this shape:
 {"detected_lang": "ko", "translation": "...", "business_version": "..."}`, text)
 
-	// Haiku, deliberately — see the cost notes at the top of this file.
+	// The fast/cheap model, deliberately — see the cost notes at the top of
+	// this file.
 	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     "claude-haiku-4-5",
+		Model:     aiFastModel,
 		MaxTokens: 1024,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
@@ -149,7 +171,8 @@ Respond with ONLY a JSON object, no prose, no markdown fences, in exactly this s
 
 func registerTranslateRoutes(r *gin.Engine) {
 	r.POST("/api/translate", func(c *gin.Context) {
-		if _, ok := requireEmail(c); !ok {
+		email, ok := requireEmail(c)
+		if !ok {
 			return
 		}
 		var body struct {
@@ -168,8 +191,12 @@ func registerTranslateRoutes(r *gin.Engine) {
 			text = string(r[:500])
 		}
 
-		result, err := translateText(c.Request.Context(), text)
+		result, err := translateText(c.Request.Context(), email, text)
 		if err != nil {
+			if errors.Is(err, errTranslateCapped) {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": err.Error()})
+				return
+			}
 			log.Printf("translateText: %v", err)
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 			return

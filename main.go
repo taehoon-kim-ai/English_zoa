@@ -5,6 +5,7 @@ import (
 	"embed"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -36,6 +37,66 @@ func init() {
 // isCloudRun returns true when running on Apps Platform (Cloud Run).
 func isCloudRun() bool { return os.Getenv("K_SERVICE") != "" }
 
+// initLogging switches to JSON logs on Cloud Run so Cloud Logging parses
+// severity/message natively. slog.SetDefault also reroutes the legacy `log`
+// package, so every existing log.Printf becomes structured for free.
+// Local dev keeps the default human-readable output.
+func initLogging() {
+	if !isCloudRun() {
+		return
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			// Rename to Cloud Logging's special fields.
+			switch a.Key {
+			case slog.LevelKey:
+				a.Key = "severity"
+			case slog.MessageKey:
+				a.Key = "message"
+			}
+			return a
+		},
+	})))
+}
+
+// requestLogger logs failed (4xx/5xx) and slow requests with the Cloud Trace
+// id so they can be correlated with Cloud Run's own request log. Healthy
+// fast requests are deliberately not logged — Cloud Run already records
+// every request, and the battle screen polls at 1s per player.
+func requestLogger() gin.HandlerFunc {
+	project := os.Getenv("PROJECT_ID")
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		status := c.Writer.Status()
+		latency := time.Since(start)
+		if status < 400 && latency < time.Second {
+			return
+		}
+		attrs := []any{
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"status", status,
+			"latency_ms", latency.Milliseconds(),
+		}
+		// Header format: TRACE_ID/SPAN_ID;o=1 — Cloud Logging wants
+		// projects/<id>/traces/<TRACE_ID> under this exact key.
+		if tc := c.GetHeader("X-Cloud-Trace-Context"); tc != "" && project != "" {
+			traceID, _, _ := strings.Cut(tc, "/")
+			attrs = append(attrs, "logging.googleapis.com/trace", "projects/"+project+"/traces/"+traceID)
+		}
+		if status >= 500 {
+			slog.Error("request", attrs...)
+		} else {
+			slog.Warn("request", attrs...)
+		}
+	}
+}
+
+// warnScan makes dropped rows visible: list handlers skip a bad row rather
+// than fail the whole response, but doing so silently hid data problems.
+func warnScan(where string, err error) { log.Printf("%s: dropped row: %v", where, err) }
+
 // iapEmail extracts the verified user email IAP injects on every web request.
 // Empty when running locally without IAP.
 func iapEmail(c *gin.Context) string {
@@ -66,6 +127,7 @@ func requireEmail(c *gin.Context) (string, bool) {
 
 func main() {
 	appCtx := context.Background()
+	initLogging()
 
 	// Scoring/leaderboard is the whole point of this app, so unlike a
 	// dashboard with live-fetch fallbacks, we fail fast without a DB.
@@ -73,7 +135,14 @@ func main() {
 		log.Fatalf("DB unavailable: %v", err)
 	}
 
-	r := gin.Default()
+	var r *gin.Engine
+	if isCloudRun() {
+		gin.SetMode(gin.ReleaseMode)
+		r = gin.New()
+		r.Use(gin.Recovery(), requestLogger())
+	} else {
+		r = gin.Default() // debug logger is useful locally
+	}
 	r.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 
 	registerProfileRoutes(r)

@@ -57,19 +57,9 @@ func tedTalkForDate(date time.Time) TEDTalk {
 	return tedTalks[idx]
 }
 
-// tedtalk_comments is keyed by video_id, not by date — the same talk repeats
-// every len(tedTalks) days, and its discussion thread reappears with it
-// rather than starting over each time it airs.
-var tedtalkSchemaStmts = []string{
-	`CREATE TABLE IF NOT EXISTS phraseup.tedtalk_comments (
-		id         SERIAL PRIMARY KEY,
-		video_id   TEXT NOT NULL,
-		email      TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
-		body       TEXT NOT NULL,
-		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`,
-	`CREATE INDEX IF NOT EXISTS tedtalk_comments_video_id_idx ON phraseup.tedtalk_comments (video_id)`,
-}
+// tedtalk_comments (DDL in migrations.go) is keyed by video_id, not by date
+// — the same talk repeats every len(tedTalks) days, and its discussion
+// thread reappears with it rather than starting over each time it airs.
 
 type TEDTalkComment struct {
 	ID        int    `json:"id"`
@@ -97,6 +87,7 @@ func getTedTalkComments(ctx context.Context, videoID string) ([]TEDTalkComment, 
 		var c TEDTalkComment
 		var createdAt time.Time
 		if err := rows.Scan(&c.ID, &c.Email, &c.Nickname, &c.Body, &createdAt); err != nil {
+			warnScan("tedtalk comments", err)
 			continue
 		}
 		c.CreatedAt = createdAt.In(seoulTZ).Format("2006-01-02 15:04")

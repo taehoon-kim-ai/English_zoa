@@ -16,27 +16,7 @@ import (
 // Owns phraseup.users + phraseup.login_events. Work on this file +
 // web/profile.jsx without touching the other sections.
 
-var profileSchemaStmts = []string{
-	`CREATE TABLE IF NOT EXISTS phraseup.users (
-		email          TEXT PRIMARY KEY,
-		nickname       TEXT NOT NULL DEFAULT '',
-		status_message TEXT NOT NULL DEFAULT '',
-		last_active_at TIMESTAMPTZ,
-		goal_vocab     INT NOT NULL DEFAULT 10,
-		goal_phrase    INT NOT NULL DEFAULT 5,
-		created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`,
-	`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ`,
-	`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS goal_vocab INT NOT NULL DEFAULT 10`,
-	`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS goal_phrase INT NOT NULL DEFAULT 5`,
-	`CREATE TABLE IF NOT EXISTS phraseup.login_events (
-		email        TEXT NOT NULL REFERENCES phraseup.users(email) ON DELETE CASCADE,
-		login_date   DATE NOT NULL,
-		login_time   TIMESTAMPTZ NOT NULL,
-		streak_count INT NOT NULL DEFAULT 1,
-		PRIMARY KEY (email, login_date)
-	)`,
-}
+// Table DDL for users + login_events lives in migrations.go.
 
 type Profile struct {
 	Email         string `json:"email"`
@@ -129,14 +109,12 @@ type TeamMember struct {
 }
 
 func getTeam(ctx context.Context) ([]TeamMember, error) {
-	// onlineWindow is baked into the literal below (Postgres interval syntax
-	// doesn't take a Go time.Duration string) — keep the two in sync if changed.
 	rows, err := db.Query(ctx, `
 		SELECT email, nickname, status_message,
-		       (last_active_at IS NOT NULL AND last_active_at > NOW() - INTERVAL '5 minutes') AS online
+		       (last_active_at IS NOT NULL AND last_active_at > NOW() - make_interval(secs => $1)) AS online
 		FROM phraseup.users
 		ORDER BY online DESC, nickname ASC
-	`)
+	`, onlineWindow.Seconds())
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +124,7 @@ func getTeam(ctx context.Context) ([]TeamMember, error) {
 	for rows.Next() {
 		var m TeamMember
 		if err := rows.Scan(&m.Email, &m.Nickname, &m.StatusMessage, &m.Online); err != nil {
+			warnScan("team members", err)
 			continue
 		}
 		members = append(members, m)
@@ -218,6 +197,7 @@ func getLoginHistory(ctx context.Context, email string, limit int) ([]LoginEvent
 		var date, loginTime time.Time
 		var streak int
 		if err := rows.Scan(&date, &loginTime, &streak); err != nil {
+			warnScan("calendar", err)
 			continue
 		}
 		events = append(events, LoginEvent{

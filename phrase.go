@@ -16,40 +16,13 @@ import (
 // ai.go tops the pool up further with AI-generated batches. quiz.go is the
 // only consumer of the pool.
 
-var phraseSchemaStmts = []string{
-	// One phrase per calendar day for the Slack source (phrase_date IS NOT
-	// NULL), but the bulk-seeded static list and AI-generated batches (ai.go)
-	// aren't tied to a single day, so phrase_date is nullable and only
-	// enforced unique among the non-null (daily-source) rows via the partial
-	// index below. english_text is unique across the whole table so bulk
-	// seeding and AI top-ups can both use ON CONFLICT DO NOTHING freely.
-	`CREATE TABLE IF NOT EXISTS phraseup.phrases (
-		id              SERIAL PRIMARY KEY,
-		english_text    TEXT NOT NULL,
-		korean_text     TEXT NOT NULL,
-		category        TEXT NOT NULL DEFAULT 'expression' CHECK (category IN ('vocabulary', 'expression')),
-		phrase_date     DATE,
-		source_slack_ts TEXT UNIQUE,
-		created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`,
-	`ALTER TABLE phraseup.phrases ALTER COLUMN phrase_date DROP NOT NULL`,
-	`ALTER TABLE phraseup.phrases DROP CONSTRAINT IF EXISTS phrases_phrase_date_key`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS phrases_phrase_date_unique ON phraseup.phrases (phrase_date) WHERE phrase_date IS NOT NULL`,
-	`ALTER TABLE phraseup.phrases ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'expression'`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS phrases_english_text_unique ON phraseup.phrases (english_text)`,
-	// Content source, for the quiz's two source sections: 'curated'/'ai'/
-	// 'slack' feed Section 1 (Word Bank), 'news'/'ted' feed Section 2 (Media).
-	`ALTER TABLE phraseup.phrases ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'curated'`,
-	// One-time gloss fixes: Korean answers that were just transliterations
-	// of the English word made those questions trivially guessable.
-	`UPDATE phraseup.phrases SET korean_text = '상승 효과' WHERE english_text = 'synergy' AND korean_text LIKE '%시너지%'`,
-	`UPDATE phraseup.phrases SET korean_text = '(비교) 기준점, 성능 지표' WHERE english_text = 'benchmark' AND korean_text LIKE '%벤치마크%'`,
-	`UPDATE phraseup.phrases SET korean_text = '(제품·사업) 추진 계획' WHERE english_text = 'roadmap' AND korean_text LIKE '%로드맵%'`,
-	`UPDATE phraseup.phrases SET korean_text = '신규 인력 적응 지원 과정' WHERE english_text = 'onboarding' AND korean_text LIKE '%온보딩%'`,
-	// card_attempts belonged to the removed flashcard screen — drop it if a
-	// prior deploy created it.
-	`DROP TABLE IF EXISTS phraseup.card_attempts`,
-}
+// Table DDL for phrases lives in migrations.go. Key design points: one
+// phrase per calendar day for the Slack source (phrase_date IS NOT NULL,
+// partial unique index), while bulk-seeded and AI-generated rows leave
+// phrase_date NULL; english_text is unique table-wide so seeding and AI
+// top-ups can both use ON CONFLICT DO NOTHING freely; `source` marks the
+// quiz section each row feeds ('curated'/'ai'/'slack' = Word Bank,
+// 'news'/'ted' = Media).
 
 // seedStaticPhrasesIfMissing bulk-inserts the curated fallbackPhrases list.
 // Cheap to call on every request once seeded (single COUNT query short-

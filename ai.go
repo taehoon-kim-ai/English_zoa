@@ -33,6 +33,15 @@ const (
 	aiGenerationBatchSize      = 20
 )
 
+// Claude model ids for every AI call in the app, env-overridable so a model
+// retirement/upgrade is a redeploy with an env var, not a code change.
+// aiContentModel generates quiz/wordbook content (quality matters);
+// aiFastModel handles translation and news summaries (cheap + fast matters).
+var (
+	aiContentModel = anthropic.Model(envOr("AI_CONTENT_MODEL", "claude-opus-5"))
+	aiFastModel    = anthropic.Model(envOr("AI_FAST_MODEL", "claude-haiku-4-5"))
+)
+
 var (
 	anthropicAPIKeyMu       sync.Mutex
 	cachedAnthropicAPIKey   string
@@ -121,7 +130,7 @@ Respond with ONLY a JSON array, no prose, no markdown code fences, in exactly th
 [{"english": "...", "korean": "...", "category": %q}]`, count, kind, avoidClause, category)
 
 	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     "claude-opus-5",
+		Model:     aiContentModel,
 		MaxTokens: 4096,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
