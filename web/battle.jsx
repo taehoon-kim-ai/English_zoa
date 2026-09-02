@@ -6,8 +6,8 @@
 const { useState: useStateBattle, useEffect: useEffectBattle, useRef: useRefBattle, useCallback: useCallbackBattle } = React;
 
 const BATTLE_GAMES = [
-  { key: 'word', icon: '🔤', title: 'Word Race', desc: 'Teams · 60 seconds · misses earn hint letters' },
-  { key: 'phrase', icon: '💬', title: 'Phrase Race', desc: 'Teams · 60 seconds · type the sentence first' },
+  { key: 'word', icon: '🔤', title: 'Word Race', desc: 'Teams · 60-150s · 5 tries per word · 3 hints' },
+  { key: 'phrase', icon: '💬', title: 'Phrase Race', desc: 'Teams · 60-150s · type the sentence first' },
   { key: 'tetris', icon: '🧱', title: 'Word Tetris', desc: 'Teams · answer (1-4) → 5s of play · clears attack' },
 ];
 
@@ -348,6 +348,12 @@ function TeamLobbyView({ state, battleId, showToast, onLeave }) {
 
   const canStart = state.team_left.players.length > 0 && state.team_right.players.length > 0;
 
+  const setDuration = async (seconds) => {
+    try {
+      await api('/api/battle/duration', { method: 'POST', body: { battle_id: battleId, seconds } });
+    } catch (e) { showToast(e.message); }
+  };
+
   const teamPanel = (side, team) => (
     <div className={`team-panel ${side} ${state.my_team === side ? 'mine' : ''}`}>
       {state.is_host ? (
@@ -388,7 +394,22 @@ function TeamLobbyView({ state, battleId, showToast, onLeave }) {
           <div className="team-vs">VS</div>
           {teamPanel('right', state.team_right)}
         </div>
-        {state.is_host && <div className="battle-sub">You're the host — name the teams, then hit Start</div>}
+        {state.game_type !== 'tetris' && (
+          <div className="duration-row">
+            <span className="duration-label">⏱ Match length</span>
+            {[60, 90, 120, 150].map((s) => (
+              <button
+                key={s}
+                className={`difficulty-chip ${state.duration_seconds === s ? 'active' : ''}`}
+                disabled={!state.is_host}
+                onClick={() => setDuration(s)}
+              >
+                {s}s
+              </button>
+            ))}
+          </div>
+        )}
+        {state.is_host && <div className="battle-sub">You're the host — name the teams, pick a length, then hit Start</div>}
         {invitable.length > 0 && (
           <div className="invite-panel">
             <div className="mini-lb-title">📨 Invite teammates</div>
@@ -446,9 +467,10 @@ function BattleView({ onBack, showToast }) {
     return () => clearInterval(iv);
   }, [battleId, loadLobby]);
 
-  // fresh round → clear my typed answer + hint
+  // fresh round → clear my typed answer + hint (the flash keeps its own
+  // timeout so "✅ Point for your team!" survives the round transition)
   const roundNo = state && state.round_no;
-  useEffectBattle(() => { setHint(''); setAnswer(''); setFlash(''); }, [roundNo]);
+  useEffectBattle(() => { setHint(''); setAnswer(''); }, [roundNo]);
 
   const timeLeft = useLocalCountdown(state && state.status === 'active' ? state.time_left_ms : 0);
   const revealMs = useLocalCountdown(state && state.status === 'active' ? state.reveal_in_ms : 0);
@@ -477,14 +499,20 @@ function BattleView({ onBack, showToast }) {
     try {
       const d = await api('/api/battle/answer', { method: 'POST', body: { battle_id: battleId, text } });
       setAnswer('');
-      if (!d.correct) {
-        setHint(d.hint || '');
-        setFlash('❌ Not it — here comes a hint!');
-        setTimeout(() => setFlash(''), 900);
-      } else {
+      if (d.correct) {
         setHint('');
         setFlash('✅ Point for your team!');
-        setTimeout(() => setFlash(''), 900);
+        setTimeout(() => setFlash(''), 2200);
+      } else if (d.forfeited) {
+        setHint(d.hint || '');
+        setFlash('🚫 Out of tries for this word!');
+        setTimeout(() => setFlash(''), 2200);
+      } else {
+        setHint(d.hint || '');
+        setFlash(d.hint
+          ? `❌ Not it — hint revealed! ${d.tries_left} ${d.tries_left === 1 ? 'try' : 'tries'} left`
+          : `❌ Not it — ${d.tries_left} ${d.tries_left === 1 ? 'try' : 'tries'} left`);
+        setTimeout(() => setFlash(''), 1600);
       }
     } catch (e) { showToast(e.message); }
   };
@@ -546,8 +574,10 @@ function BattleView({ onBack, showToast }) {
               <CountdownOverlay ms={revealMs} />
             ) : counting ? (
               <>
-                {state.last_round_winner && (
-                  <div className="battle-lastround">✅ <b>{state.last_round_winner}</b> took "{state.last_round_word}"</div>
+                {state.last_round_word && (
+                  state.last_round_winner
+                    ? <div className="battle-lastround">✅ <b>{state.last_round_winner}</b> got "{state.last_round_word}" — point scored!</div>
+                    : <div className="battle-lastround">⏭ Nobody got "{state.last_round_word}"</div>
                 )}
                 <div className="battle-countdown small">next word…</div>
               </>
@@ -556,17 +586,28 @@ function BattleView({ onBack, showToast }) {
                 <div className="battle-korean">{state.korean_prompt}</div>
                 {(hint || state.my_hint) && <div className="battle-hint">💡 {hint || state.my_hint}</div>}
                 {isPlayer ? (
-                  <>
-                    <input
-                      className="battle-input"
-                      value={answer}
-                      onChange={(e) => setAnswer(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
-                      placeholder="Type the English + Enter"
-                      autoFocus
-                    />
-                    {flash && <div className="battle-flash">{flash}</div>}
-                  </>
+                  state.my_forfeited ? (
+                    <>
+                      <div className="battle-forfeit">🚫 Out of tries — wait for the next word</div>
+                      {flash && <div className="battle-flash">{flash}</div>}
+                    </>
+                  ) : (
+                    <>
+                      <input
+                        className="battle-input"
+                        value={answer}
+                        onChange={(e) => setAnswer(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+                        placeholder="Type the English + Enter"
+                        autoFocus
+                      />
+                      <div className="battle-meta-row">
+                        <span>🎯 {state.my_tries_left} {state.my_tries_left === 1 ? 'try' : 'tries'} left</span>
+                        <span>💡 {state.my_hints_left} {state.my_hints_left === 1 ? 'hint' : 'hints'} left</span>
+                      </div>
+                      {flash && <div className="battle-flash">{flash}</div>}
+                    </>
+                  )
                 ) : (
                   <div className="battle-sub">Spectating — teams are racing to type this in English</div>
                 )}

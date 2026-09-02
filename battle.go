@@ -52,9 +52,19 @@ import (
 const (
 	battleMatchCountdownSec = 3    // the 3‥2‥1‥START! before round 1
 	battleRoundPauseMs      = 1500 // banner pause between later rounds
-	battleRaceDurationSec   = 60   // the whole race is one minute
 	battleTeamNameMax       = 24
+	battleMaxHints          = 3 // per player per MATCH
+	battleMaxAttempts       = 5 // per player per round; the 5th miss forfeits
+	// battleWordPoolSize keeps races on the same fresh vocabulary as the
+	// Word of the Day list (newest N per category) instead of the whole
+	// historical pool, so daily drops actually show up in games.
+	battleWordPoolSize = 100
 )
+
+// battleDurations are the host-selectable race lengths (seconds).
+var battleDurations = map[int]bool{60: true, 90: true, 120: true, 150: true}
+
+const battleDefaultDurationSec = 60
 
 // battleHMACKey signs the tetris word-gate tokens so grading stays
 // stateless across instances. BATTLE_HMAC_KEY overrides it when set.
@@ -142,7 +152,7 @@ func createBattle(ctx context.Context, email, gameType string) (int, error) {
 		INSERT INTO phraseup.battles (game_type, rounds_total, host_email, duration_seconds)
 		VALUES ($1, 0, $2, $3)
 		RETURNING id
-	`, gameType, email, battleRaceDurationSec).Scan(&battleID)
+	`, gameType, email, battleDefaultDurationSec).Scan(&battleID)
 	if err != nil {
 		return 0, err
 	}
@@ -154,15 +164,51 @@ func createBattle(ctx context.Context, email, gameType string) (int, error) {
 	return battleID, err
 }
 
-// startRound inserts the next round with a fresh random phrase of the
-// battle's category. Round start time doubles as the countdown anchor.
+// startRound inserts the next round with a random phrase drawn from the
+// NEWEST battleWordPoolSize items of the category (the Word of the Day
+// pool), never repeating a word already used in this battle. Falls back to
+// the full pool if the battle somehow exhausts the fresh one. Round start
+// time doubles as the countdown anchor.
 func startRound(ctx context.Context, tx pgx.Tx, battleID int, roundNo int, category string) error {
-	_, err := tx.Exec(ctx, `
+	ct, err := tx.Exec(ctx, `
 		INSERT INTO phraseup.battle_rounds (battle_id, round_no, phrase_id)
-		SELECT $1, $2, id FROM phraseup.phrases WHERE category = $3 ORDER BY random() LIMIT 1
+		SELECT $1, $2, id FROM (
+			SELECT id FROM phraseup.phrases WHERE category = $3
+			ORDER BY created_at DESC, id DESC LIMIT `+strconv.Itoa(battleWordPoolSize)+`
+		) fresh
+		WHERE id NOT IN (SELECT phrase_id FROM phraseup.battle_rounds WHERE battle_id = $1)
+		ORDER BY random() LIMIT 1
 		ON CONFLICT (battle_id, round_no) DO NOTHING
 	`, battleID, roundNo, category)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO phraseup.battle_rounds (battle_id, round_no, phrase_id)
+			SELECT $1, $2, id FROM phraseup.phrases WHERE category = $3 ORDER BY random() LIMIT 1
+			ON CONFLICT (battle_id, round_no) DO NOTHING
+		`, battleID, roundNo, category)
+	}
 	return err
+}
+
+// setBattleDuration lets the host pick the race length while the lobby is open.
+func setBattleDuration(ctx context.Context, battleID int, email string, seconds int) error {
+	if !battleDurations[seconds] {
+		return errors.New("duration must be 60, 90, 120 or 150 seconds")
+	}
+	ct, err := db.Exec(ctx, `
+		UPDATE phraseup.battles SET duration_seconds = $3
+		WHERE id = $1 AND host_email = $2 AND status = 'waiting'
+	`, battleID, email, seconds)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return errors.New("only the host can set the duration in an open lobby")
+	}
+	return nil
 }
 
 type BattleLobbyEntry struct {
@@ -457,6 +503,9 @@ type BattleState struct {
 	KoreanPrompt  string `json:"korean_prompt,omitempty"`
 	RevealInMs    int64  `json:"reveal_in_ms"`
 	MyHint        string `json:"my_hint,omitempty"`
+	MyTriesLeft   int    `json:"my_tries_left"`
+	MyHintsLeft   int    `json:"my_hints_left"`
+	MyForfeited   bool   `json:"my_forfeited"`
 	LastRoundWord string `json:"last_round_word,omitempty"`
 	LastRoundWin  string `json:"last_round_winner,omitempty"`
 
@@ -508,7 +557,7 @@ func getBattleState(ctx context.Context, battleID int, email string) (BattleStat
 	left := &BattleTeam{Name: leftName, Score: leftScore, Players: []BattlePlayer{}}
 	right := &BattleTeam{Name: rightName, Score: rightScore, Players: []BattlePlayer{}}
 	rows, err := db.Query(ctx, `
-		SELECT bp.team, u.nickname, u.avatar_url, bp.email, bp.lines, bp.garbage, bp.dead
+		SELECT bp.team, u.nickname, u.avatar_url, bp.email, bp.lines, bp.garbage, bp.dead, bp.hints_used
 		FROM phraseup.battle_players bp
 		JOIN phraseup.users u ON u.email = bp.email
 		WHERE bp.battle_id = $1 ORDER BY bp.joined_at
@@ -518,9 +567,9 @@ func getBattleState(ctx context.Context, battleID int, email string) (BattleStat
 	}
 	for rows.Next() {
 		var team, nick, avatar, pEmail string
-		var lines, garbage int
+		var lines, garbage, pHintsUsed int
 		var dead bool
-		if err := rows.Scan(&team, &nick, &avatar, &pEmail, &lines, &garbage, &dead); err != nil {
+		if err := rows.Scan(&team, &nick, &avatar, &pEmail, &lines, &garbage, &dead, &pHintsUsed); err != nil {
 			warnScan("battle players", err)
 			continue
 		}
@@ -535,6 +584,10 @@ func getBattleState(ctx context.Context, battleID int, email string) (BattleStat
 			s.Role = "player"
 			s.MyPendingGarbage = garbage
 			s.IAmDead = dead
+			s.MyHintsLeft = battleMaxHints - pHintsUsed
+			if s.MyHintsLeft < 0 {
+				s.MyHintsLeft = 0
+			}
 		}
 	}
 	rows.Close()
@@ -592,24 +645,30 @@ func getBattleState(ctx context.Context, battleID int, email string) (BattleStat
 	}
 
 	if s.Status == "active" && s.GameType != "tetris" {
-		var roundNo int
+		var roundNo, attempts, hintLvl int
 		var roundStarted time.Time
-		var korean, english, hints string
+		var korean, english string
 		err := db.QueryRow(ctx, `
-			SELECT r.round_no, r.started_at, p.korean_text, p.english_text, COALESCE(r.hints->>$2, '0')
+			SELECT r.round_no, r.started_at, p.korean_text, p.english_text,
+			       COALESCE((r.attempts->>$2)::int, 0), COALESCE((r.hints->>$2)::int, 0)
 			FROM phraseup.battle_rounds r JOIN phraseup.phrases p ON p.id = r.phrase_id
 			WHERE r.battle_id = $1 AND r.winner_email IS NULL
 			ORDER BY r.round_no ASC LIMIT 1
-		`, battleID, email).Scan(&roundNo, &roundStarted, &korean, &english, &hints)
+		`, battleID, email).Scan(&roundNo, &roundStarted, &korean, &english, &attempts, &hintLvl)
 		if err == nil {
 			s.RoundNo = roundNo
+			s.MyTriesLeft = battleMaxAttempts - attempts
+			if s.MyTriesLeft < 0 {
+				s.MyTriesLeft = 0
+			}
+			s.MyForfeited = s.MyTeam != "" && attempts >= battleMaxAttempts
 			revealAt := roundStarted.Add(battleRevealDelay(roundNo))
 			s.RevealInMs = time.Until(revealAt).Milliseconds()
 			if s.RevealInMs <= 0 {
 				s.RevealInMs = 0
 				s.KoreanPrompt = korean
-				if lvl, _ := strconv.Atoi(hints); lvl > 0 && s.MyTeam != "" {
-					s.MyHint = battleHint(english, lvl)
+				if hintLvl > 0 && s.MyTeam != "" {
+					s.MyHint = battleHint(english, hintLvl)
 				}
 			}
 		}
@@ -630,80 +689,140 @@ func getBattleState(ctx context.Context, battleID int, email string) (BattleStat
 
 // answerBattleRound grades a race submission; the first correct submission
 // takes the round for their team (settled under a row lock on the battle).
-// A wrong submission earns the submitter one more hint letter. The match
-// itself is only ended by the clock.
-func answerBattleRound(ctx context.Context, battleID int, email, text string) (correct bool, hint string, err error) {
+// Each player gets battleMaxAttempts tries per round — the 5th miss forfeits
+// the round for them (and when everyone is out, the round is skipped). A
+// miss also spends one of the player's battleMaxHints match-wide hints to
+// reveal one more letter, while any remain. The match is ended by the clock.
+type battleAnswerResult struct {
+	Correct   bool   `json:"correct"`
+	Hint      string `json:"hint,omitempty"`
+	TriesLeft int    `json:"tries_left"`
+	HintsLeft int    `json:"hints_left"`
+	Forfeited bool   `json:"forfeited"`
+}
+
+func answerBattleRound(ctx context.Context, battleID int, email, text string) (battleAnswerResult, error) {
+	var res battleAnswerResult
 	tx, err := db.Begin(ctx)
 	if err != nil {
-		return false, "", err
+		return res, err
 	}
 	defer tx.Rollback(ctx)
 
 	var status, gameType, myTeam string
 	var endsAt *time.Time
+	var hintsUsed int
 	err = tx.QueryRow(ctx, `
 		SELECT b.status, b.game_type, b.ends_at,
-		       COALESCE((SELECT team FROM phraseup.battle_players bp WHERE bp.battle_id = b.id AND bp.email = $2), '')
+		       COALESCE((SELECT team FROM phraseup.battle_players bp WHERE bp.battle_id = b.id AND bp.email = $2), ''),
+		       COALESCE((SELECT hints_used FROM phraseup.battle_players bp WHERE bp.battle_id = b.id AND bp.email = $2), 0)
 		FROM phraseup.battles b WHERE b.id = $1 FOR UPDATE
-	`, battleID, email).Scan(&status, &gameType, &endsAt, &myTeam)
+	`, battleID, email).Scan(&status, &gameType, &endsAt, &myTeam, &hintsUsed)
 	if err != nil {
-		return false, "", errors.New("battle not found")
+		return res, errors.New("battle not found")
 	}
 	if myTeam == "" {
-		return false, "", errors.New("spectators can't answer")
+		return res, errors.New("spectators can't answer")
 	}
 	if status != "active" || gameType == "tetris" {
-		return false, "", errors.New("battle is not accepting answers")
+		return res, errors.New("battle is not accepting answers")
 	}
 	if endsAt != nil && time.Now().After(*endsAt) {
 		tx.Rollback(ctx)
 		if err := finishExpiredRace(ctx, battleID); err != nil {
 			log.Printf("finishExpiredRace(%d): %v", battleID, err)
 		}
-		return false, "", errors.New("time's up")
+		return res, errors.New("time's up")
 	}
 
-	var roundID, roundNo int
+	var roundID, roundNo, attempts, hintLvl int
 	var startedAt time.Time
-	var english, myHints string
+	var english string
 	err = tx.QueryRow(ctx, `
-		SELECT r.id, r.round_no, r.started_at, p.english_text, COALESCE(r.hints->>$2, '0')
+		SELECT r.id, r.round_no, r.started_at, p.english_text,
+		       COALESCE((r.attempts->>$2)::int, 0), COALESCE((r.hints->>$2)::int, 0)
 		FROM phraseup.battle_rounds r JOIN phraseup.phrases p ON p.id = r.phrase_id
 		WHERE r.battle_id = $1 AND r.winner_email IS NULL
 		ORDER BY r.round_no ASC LIMIT 1
-	`, battleID, email).Scan(&roundID, &roundNo, &startedAt, &english, &myHints)
+	`, battleID, email).Scan(&roundID, &roundNo, &startedAt, &english, &attempts, &hintLvl)
 	if err != nil {
-		return false, "", errors.New("no open round")
+		return res, errors.New("no open round")
 	}
 	if time.Since(startedAt) < battleRevealDelay(roundNo) {
-		return false, "", errors.New("too early — not revealed yet")
+		return res, errors.New("too early — not revealed yet")
 	}
+	if attempts >= battleMaxAttempts {
+		return res, errors.New("no tries left for this word")
+	}
+	res.HintsLeft = battleMaxHints - hintsUsed
 
 	if normalizeBattleAnswer(text) != normalizeBattleAnswer(english) {
-		lvl, _ := strconv.Atoi(myHints)
-		lvl++
+		attempts++
 		if _, err := tx.Exec(ctx, `
-			UPDATE phraseup.battle_rounds SET hints = jsonb_set(hints, ARRAY[$2], to_jsonb($3::int)) WHERE id = $1
-		`, roundID, email, lvl); err != nil {
-			return false, "", err
+			UPDATE phraseup.battle_rounds SET attempts = jsonb_set(attempts, ARRAY[$2], to_jsonb($3::int)) WHERE id = $1
+		`, roundID, email, attempts); err != nil {
+			return res, err
 		}
-		return false, battleHint(english, lvl), tx.Commit(ctx)
+		res.TriesLeft = battleMaxAttempts - attempts
+		res.Forfeited = attempts >= battleMaxAttempts
+
+		if !res.Forfeited && hintsUsed < battleMaxHints {
+			hintLvl++
+			if _, err := tx.Exec(ctx, `
+				UPDATE phraseup.battle_rounds SET hints = jsonb_set(hints, ARRAY[$2], to_jsonb($3::int)) WHERE id = $1
+			`, roundID, email, hintLvl); err != nil {
+				return res, err
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE phraseup.battle_players SET hints_used = hints_used + 1 WHERE battle_id = $1 AND email = $2
+			`, battleID, email); err != nil {
+				return res, err
+			}
+			res.Hint = battleHint(english, hintLvl)
+			res.HintsLeft--
+		} else if hintLvl > 0 {
+			res.Hint = battleHint(english, hintLvl) // keep showing what they earned
+		}
+
+		if res.Forfeited {
+			// If nobody in the match can answer any more, skip the round.
+			var alive int
+			if err := tx.QueryRow(ctx, `
+				SELECT COUNT(*) FROM phraseup.battle_players bp
+				WHERE bp.battle_id = $1
+				  AND COALESCE((SELECT (r.attempts->>bp.email)::int FROM phraseup.battle_rounds r WHERE r.id = $2), 0) < $3
+			`, battleID, roundID, battleMaxAttempts).Scan(&alive); err != nil {
+				return res, err
+			}
+			if alive == 0 {
+				// winner_email = '' marks "decided, nobody scored".
+				if _, err := tx.Exec(ctx, `UPDATE phraseup.battle_rounds SET winner_email = '' WHERE id = $1`, roundID); err != nil {
+					return res, err
+				}
+				if err := startRound(ctx, tx, battleID, roundNo+1, battleCategory(gameType)); err != nil {
+					return res, err
+				}
+			}
+		}
+		return res, tx.Commit(ctx)
 	}
 
 	if _, err := tx.Exec(ctx, `UPDATE phraseup.battle_rounds SET winner_email = $2 WHERE id = $1`, roundID, email); err != nil {
-		return false, "", err
+		return res, err
 	}
 	scoreCol := "guest_score" // right team
 	if myTeam == "left" {
 		scoreCol = "host_score"
 	}
 	if _, err := tx.Exec(ctx, `UPDATE phraseup.battles SET `+scoreCol+` = `+scoreCol+` + 1 WHERE id = $1`, battleID); err != nil {
-		return false, "", err
+		return res, err
 	}
 	if err := startRound(ctx, tx, battleID, roundNo+1, battleCategory(gameType)); err != nil {
-		return false, "", err
+		return res, err
 	}
-	return true, "", tx.Commit(ctx)
+	res.Correct = true
+	res.TriesLeft = battleMaxAttempts
+	return res, tx.Commit(ctx)
 }
 
 // tetrisGateQuestion returns a word-gate MC question. Grading is stateless:
@@ -928,6 +1047,7 @@ func registerBattleRoutes(r *gin.Engine) {
 		if err := seedStaticPhrasesIfMissing(ctx); err != nil {
 			log.Printf("seedStaticPhrasesIfMissing: %v", err)
 		}
+		go ensureDailyWordDrop(context.WithoutCancel(ctx))
 		id, err := createBattle(ctx, email, body.GameType)
 		if err != nil {
 			log.Printf("createBattle: %v", err)
@@ -1003,6 +1123,26 @@ func registerBattleRoutes(r *gin.Engine) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
+	r.POST("/api/battle/duration", func(c *gin.Context) {
+		email, ok := requireEmail(c)
+		if !ok {
+			return
+		}
+		var body struct {
+			BattleID int `json:"battle_id"`
+			Seconds  int `json:"seconds"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		if err := setBattleDuration(c.Request.Context(), body.BattleID, email, body.Seconds); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
 	r.POST("/api/battle/start", func(c *gin.Context) {
 		email, ok := requireEmail(c)
 		if !ok {
@@ -1054,10 +1194,25 @@ func registerBattleRoutes(r *gin.Engine) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 			return
 		}
-		if err := inviteToBattle(c.Request.Context(), body.BattleID, email, strings.TrimSpace(body.Email)); err != nil {
+		toEmail := strings.TrimSpace(body.Email)
+		if err := inviteToBattle(c.Request.Context(), body.BattleID, email, toEmail); err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
+		// Best-effort Slack DM ping, sent as the inviter.
+		go func(battleID int) {
+			ctx := context.Background()
+			var fromName, gameType string
+			if err := db.QueryRow(ctx, `
+				SELECT u.nickname, b.game_type FROM phraseup.battles b
+				JOIN phraseup.users u ON u.email = $2
+				WHERE b.id = $1
+			`, battleID, email).Scan(&fromName, &gameType); err != nil {
+				return
+			}
+			titles := map[string]string{"word": "Word Race", "phrase": "Phrase Race", "tetris": "Word Tetris"}
+			slackInvitePing(email, fromName, toEmail, titles[gameType])
+		}(body.BattleID)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
@@ -1128,12 +1283,12 @@ func registerBattleRoutes(r *gin.Engine) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 			return
 		}
-		correct, hint, err := answerBattleRound(c.Request.Context(), body.BattleID, email, body.Text)
+		res, err := answerBattleRound(c.Request.Context(), body.BattleID, email, body.Text)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"correct": correct, "hint": hint})
+		c.JSON(http.StatusOK, res)
 	})
 
 	// ── tetris ──

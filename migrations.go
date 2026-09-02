@@ -235,6 +235,14 @@ var migrations = []migration{
 		`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS avatar_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE phraseup.users ADD COLUMN IF NOT EXISTS avatar_checked_at TIMESTAMPTZ`,
 	}},
+	{6, "battle attempts + hint budget", []string{
+		// battle.go — per-player wrong-attempt counts for the current round
+		// ({email: n}); 5 misses forfeits the round for that player. The
+		// existing battle_rounds.hints JSONB keeps the per-round hint LEVEL,
+		// while hints_used tracks each player's match-wide hint budget (3).
+		`ALTER TABLE phraseup.battle_rounds ADD COLUMN IF NOT EXISTS attempts JSONB NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE phraseup.battle_players ADD COLUMN IF NOT EXISTS hints_used INT NOT NULL DEFAULT 0`,
+	}},
 }
 
 // migrationLockKey is an arbitrary app-wide advisory-lock id; it only has to

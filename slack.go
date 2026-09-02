@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -72,28 +73,39 @@ func fetchMetadataToken(audience string) (string, error) {
 }
 
 var (
-	asyncTokenMu     sync.Mutex
-	cachedAsyncToken string
-	asyncTokenExpiry time.Time
+	asyncTokenMu    sync.Mutex
+	asyncTokenCache = map[string]struct {
+		token  string
+		expiry time.Time
+	}{}
 )
+
+// slackUserScopes covers everything the app does through the Data API:
+// reading the phrase channel, resolving profile photos, and DM-ing battle
+// invites (chat:write posts AS the acting user).
+var slackUserScopes = []string{"channels:history", "channels:read", "users:read", "users:read.email", "chat:write", "im:write"}
 
 // getAsyncToken mints a scoped Data API token seeded by slackSeedUserEmail(),
 // cached for 9 of its 10-minute TTL. A scale-to-zero/cold service has no live
 // browser session to mint a request token from, so production always goes
 // through this path (see dataAPIGetSlack).
-func getAsyncToken() (string, error) {
+func getAsyncToken() (string, error) { return getAsyncTokenFor(slackSeedUserEmail()) }
+
+// getAsyncTokenFor mints (and caches) a Data API token acting as the given
+// user — battle-invite DMs are sent as the INVITER, not a fixed seed user.
+func getAsyncTokenFor(email string) (string, error) {
 	asyncTokenMu.Lock()
 	defer asyncTokenMu.Unlock()
-	if cachedAsyncToken != "" && time.Now().Before(asyncTokenExpiry) {
-		return cachedAsyncToken, nil
+	if c, ok := asyncTokenCache[email]; ok && time.Now().Before(c.expiry) {
+		return c.token, nil
 	}
 	iamToken, err := fetchMetadataToken(dataAPIURL)
 	if err != nil {
 		return "", fmt.Errorf("async-token IAM: %w", err)
 	}
 	body, _ := json.Marshal(map[string]any{
-		"emails":      []string{slackSeedUserEmail()},
-		"user_scopes": []string{"channels:history", "channels:read", "users:read", "users:read.email"},
+		"emails":      []string{email},
+		"user_scopes": slackUserScopes,
 	})
 	req, _ := http.NewRequest("POST", dataAPIURL+"/api/async-tokens", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+iamToken)
@@ -114,9 +126,11 @@ func getAsyncToken() (string, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || len(result.Tokens) == 0 {
 		return "", fmt.Errorf("async-token: empty response")
 	}
-	cachedAsyncToken = result.Tokens[0].RequestToken
-	asyncTokenExpiry = time.Now().Add(9 * time.Minute)
-	return cachedAsyncToken, nil
+	asyncTokenCache[email] = struct {
+		token  string
+		expiry time.Time
+	}{result.Tokens[0].RequestToken, time.Now().Add(9 * time.Minute)}
+	return asyncTokenCache[email].token, nil
 }
 
 func dataAPIGetSlack(path string) (*http.Response, error) {
@@ -254,4 +268,86 @@ func parsePhraseText(raw string) (english, korean string, ok bool) {
 	}
 
 	return "", "", false
+}
+
+// dataAPIPostSlack posts a Slack Web API method through the Data API, acting
+// as the given user. Production-only (local dev has no async-token minting).
+func dataAPIPostSlack(asEmail, path string, payload map[string]any) (*http.Response, error) {
+	if !isCloudRun() {
+		return nil, fmt.Errorf("slack post: production only")
+	}
+	iamToken, err := fetchMetadataToken(dataAPIURL)
+	if err != nil {
+		return nil, fmt.Errorf("production auth: %w", err)
+	}
+	requestToken, err := getAsyncTokenFor(asEmail)
+	if err != nil {
+		return nil, fmt.Errorf("production async-token: %w", err)
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", dataAPIURL+"/api/data/slack"+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+iamToken)
+	req.Header.Set("X-Request-Token", requestToken)
+	req.Header.Set("Content-Type", "application/json")
+	return (&http.Client{Timeout: 15 * time.Second}).Do(req)
+}
+
+// slackLookupUserID resolves a Slack user id by email, acting as asEmail.
+func slackLookupUserID(asEmail, email string) string {
+	requestToken, err := getAsyncTokenFor(asEmail)
+	if err != nil || !isCloudRun() {
+		return ""
+	}
+	iamToken, err := fetchMetadataToken(dataAPIURL)
+	if err != nil {
+		return ""
+	}
+	req, _ := http.NewRequest("GET", dataAPIURL+"/api/data/slack/users.lookupByEmail?email="+neturl.QueryEscape(email), nil)
+	req.Header.Set("Authorization", "Bearer "+iamToken)
+	req.Header.Set("X-Request-Token", requestToken)
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var out struct {
+		OK   bool `json:"ok"`
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || !out.OK {
+		return ""
+	}
+	return out.User.ID
+}
+
+// slackInvitePing DMs a battle invite to the invitee, sent AS the inviter.
+// Best-effort: any failure just means they rely on the in-app notification.
+func slackInvitePing(fromEmail, fromName, toEmail, gameTitle string) {
+	userID := slackLookupUserID(fromEmail, toEmail)
+	if userID == "" {
+		log.Printf("slack invite ping: no user id for %s", toEmail)
+		return
+	}
+	text := fmt.Sprintf("⚔️ *%s* invited you to *%s* on PhraseUp! Join here: https://phraseup.experimental.apps.applied.dev/#quiz", fromName, gameTitle)
+	resp, err := dataAPIPostSlack(fromEmail, "/chat.postMessage", map[string]any{
+		"channel": userID,
+		"text":    text,
+	})
+	if err != nil {
+		log.Printf("slack invite ping: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	var out struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err == nil && !out.OK {
+		log.Printf("slack invite ping: %s", out.Error)
+	}
 }
